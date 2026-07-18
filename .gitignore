@@ -1,0 +1,27 @@
+# Cloned sub-project repositories (each has its own git remote on
+# ssh://git@192.168.60.105:2222/liuwfng/<repo>.git). Kept out of the
+# ferrostack parent repo; develop/commit inside each one independently.
+/aegis-sdk/
+/build-deb/
+/cdp-agent/
+/cdp-worker/
+/concilium/
+/ferrovirt/
+/fledge/
+/hyper-agent/
+/imgtools/
+/krait/
+/lictor/
+/lycan/
+/ocfs2/
+/petrel/
+/qemu/
+/snapshot-helper/
+/virt-control/
+/xvirt/
+/xvirt-autotest/
+/xvirt-blockdiff/
+/xvirt-client/
+/xvirt-libs/
+/xvirt-snapmig/
+/xvirt-tools/
