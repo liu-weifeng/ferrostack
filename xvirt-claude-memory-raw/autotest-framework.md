@@ -1,0 +1,35 @@
+---
+name: autotest-framework
+description: "xvirt-autotest — the automated test framework (packaging→ISO→PXE→center→storage→network→create-VM); how to run it, where it lives, key env facts"
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 5af3e1ee-ad52-42c9-bf8a-f8acea03e338
+---
+
+`xvirt-autotest/` = the platform automation test framework I built 2026-06-18. **Its own standalone repo** (nested in the xvirt working tree like petrel/fledge): `ssh://git@192.168.2.107:2222/liuwfng/xvirt-autotest.git` (branch main, pushed; NOT tracked in the xvirt monorepo). Pure Python **stdlib only** (urllib/http.server/sqlite3/json — runs anywhere python3 exists, incl Jenkins container).
+
+**Run it:** `cd /root/code/xvirt/xvirt-autotest && python3 -m autotest.cli run` (or `./bin/autotest run`). Default run = stages **bootstrap(25)**→center→host→inventory→enrollment→storage→network→vm→**hotplug(65)**.
+
+**Stage 25 `bootstrap.*` (added 2026-06-20, commit d6f6221):** center is now treated as a **managed VM brought up via API**, not the old hand-launched `xvirt-center-vm` systemd qemu on 123. Idempotent so it's safe every run: `bootstrap.create_center` (destructive+gated — fresh-installs center from `center.mgmt_iso` via the **host node's standalone** `POST /api/vcenter/vm`+power-on; only when center absent + `--confirm-destructive` + iso configured, else Skip), `bootstrap.ensure_center` (default — assert center reachable+management), `bootstrap.enroll_hosts` (default — `add_host` any configured node missing from center, wait CONNECTED). Config in `conf/lab.json` "center" block (host_node=xvirt-standalone/123, mac, 8G/4cpu, disk_gb, mgmt_iso="" disables create, enroll_nodes). New plumbing: `ctx.node_client(node)` = FerrovirtClient against a node's standalone API; `ferrovirt.add_host()` + `wait_host_connected()`. NOTE: no mgmt ISO currently exists in the lab + center already up, so normal runs idempotently skip create and just verify online + enrolled. Build a management ISO (lycan `--role management`) to exercise the real fresh-install path.
+
+**Fresh-install cutover VALIDATED END-TO-END (2026-06-20, commit 3730a30).** Built a lab-tailored mgmt ISO (lycan, static 192.168.2.121/24 + root weifeng, answers in gitignored `lab-env/center-answers.yaml`), staged at `192.168.2.123:/datastore/iso/xvirt-center-RELEASE.iso` (`center.mgmt_iso`). Ran the real destructive cutover (`run --stage bootstrap --confirm-destructive`): un-enroll 123+106 → stop+disable the old hand-launched `xvirt-center-vm` systemd qemu → create_center installs a FRESH center VM via 123's standalone API → `.121` up as management (~5.7 min offline install) → enroll both nodes. Result **3✓ 0✗**; the center is now a **managed VM visible in inventory** (the original "106/123 看不到虚拟机" bug — it was the hand-launched qemu, never in any DB), nodes CONNECTED + HTTP sync `synced`, petrel HEALTH_WARN. **KEY GOTCHA — lycan rejects target disks <50 GB** (`install.py:45` "need ≥ 50 GB"); `center.disk_gb=40` failed instantly at partitioning and looked like a casper hang (frozen console + 88% CPU = the live ISO's `snapd.seeded` spinning + zero disk writes). Diagnosed only via SERIAL capture (`console=ttyS0,115200` is on the grub cmdline but the API-created VM logged no serial). Fix = `disk_gb` 64 + a fail-fast `assert disk_gb>=50` in create_center. The old center disk (`/datastore/f02526e8…/center/disk.qcow2`, ~7G) + disabled unit were kept as a rollback asset. Note: re-running the cutover requires the nodes to be un-enrolled first (single-center guard); a clean fresh-center enroll re-establishes valid sync tokens (a node-side-only unenroll leaves the center's HTTP sync token stale → `host_sync` unauthorized until re-enroll). `--include-gated` VALIDATED full incl hotplug = **49✓ 0✗ 3⊘ / 52** (env clean after, all created resources self-reclaimed). `cases` lists items, `serve` = web dashboard :8910, `export <run_id> --format junit|html|json`.
+
+**Stage 65 `hotplug.*` (added 2026-06-19):** device hot-add/remove on a running VM — disk virtio/scsi add+remove, nic virtio/e1000/rtl8139 add + one-shot remove, CDROM eject/insert/switch, CPU hot-add, memory hot-add. Each asserts the ferrovirt task.message `"live applied N/N op(s)"` (real QMP application) + DB readback. Needs a host-side ISO at `/datastore/iso/autotest-dummy.iso` (vm_defaults.test_iso) on 123+106.
+
+**3 legit env-skips (NOT bugs):** `vm.snapshot` — petrel-disk VM → V1 qcow2-chain snapshot unimplemented (on local-pool it'd be reflink); `vm.migrate` — TSC-gated 106↔123; `hotplug.disk_sata` — AHCI runtime disk hotplug unsupported on this QEMU/machine (graceful Skip). **Real findings encoded:** port-group create needs `switch`=virtual_switch **uuid** (only in network *detail*, not list which gives numeric id); a FAILED snapshot row FK-blocks vm delete → snapshot case cleans up failed rows before skipping.
+
+**Add a test item = one `@testcase(...)` function** dropped in `autotest/cases/` (auto-discovered). Cases reach the platform only via `ctx.ferrovirt/.fledge/.ssh/.build`; share via `ctx.state`; clean up via `ctx.cleanup()`. Guide: `docs/ADDING_TESTS.md`. Plan doc: `docs/自动化测试方案.md`.
+
+**Config** (only place to edit env): `conf/lab.json`.
+
+**Env facts the framework encodes (validated):**
+- API target = **center .121** (management role, root/weifeng); manages standalone nodes 123 + 106 (CONNECTED). Login returns a bare JWT; reads wrapped in `{"value":…}`; writes return TaskInfo → poll `/api/cis/tasks/{uuid}`.
+- VM create payload: `{host(uuid), name, datastore(uuid), vcpu/sockets/cores, cpu_mode, memory(MB), firmware_type, acpi, apic, disks:[{type:file,device:disk,datastore,target_bus:virtio,size(GB),create:true,tier_policy:inherit}], interfaces:[{network:"br-ex",model:virtio}], videos:[{model:qxl,primary:true}]}`. NIC uses `network=switch-name` (no port_groups in this env).
+- **vswitch create: use kind=OVS, NOT LINUX_BRIDGE** — nodes have no NetworkManager so nmcli linux-bridge create fails.
+- **petrel status needs `?host=<compute-node-uuid>`** (center self has no petrel). Cluster = HEALTH_OK, 10 OSDs across 123(0-4)+106(5-9).
+- PXE reinstall of 106/123 is **destructive+gated** (stage `provision`, needs `--confirm-destructive`) — wipes the running petrel cluster + center VM. Default runs never touch it. See [[fledge-pxe-deploy]] for node MACs/disks.
+
+**Artifact repo (NEW, set up on .107):** lightweight nginx file repo, container `xvirt-artifacts` serving `/data/xvirt-artifacts` on **107:8085** (`/debs` flat apt repo + `/iso` + `/bundles`). 107 has GitLab CE + Jenkins(docker, jenkins-with-docker:lts v2.555.1 :8080) + 675G free on /data but only ~550M free RAM. Apt line: `deb [trusted=yes] http://192.168.2.107:8085/debs ./`. Scripts: `scripts/{setup-artifact-repo,publish-debs,publish-iso}.sh`.
+
+**Jenkins:** pipelines in `jenkins/Jenkinsfile.{package,iso,e2e,full}`. 107 too weak → builds run on control box 114 (register it as SSH agent label `xvirt-builder`). e2e emits JUnit for Jenkins. Build commands per [[ubuntu-port-qemu-deb]]/[[lycan-autoinstall-iso]].
