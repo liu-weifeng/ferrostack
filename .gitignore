@@ -26,3 +26,6 @@
 /xvirt-libs/
 /xvirt-snapmig/
 /xvirt-tools/
+
+# Upstream SPDK clone (https://github.com/spdk/spdk.git) used for reading/analysis
+/spdk-analysis/
