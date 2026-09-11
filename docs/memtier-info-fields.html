@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MemTierInfo 字段手册</title>
+<style>
+:root{
+  --paper:#f6f7f8;--surface:#ffffff;--ink:#1b1f24;--ink-2:#4f5761;--ink-3:#7d8590;
+  --line:#d9dde2;--code-bg:#eceff2;
+  --hot:#b8501c;--hot-soft:#f3dccf;--cold:#2d6aa8;--cold-soft:#d5e3f2;
+  --warn:#9a6b00;--warn-soft:#f6e9c4;--bad:#a52a2a;--bad-soft:#f4d6d6;
+  --accent:#2d6aa8;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --paper:#14171b;--surface:#1b1f24;--ink:#e6e9ec;--ink-2:#aeb5bd;--ink-3:#7d8590;
+    --line:#2b3138;--code-bg:#1f242a;
+    --hot:#e0783f;--hot-soft:#4a2a18;--cold:#5f97d8;--cold-soft:#1c3552;
+    --warn:#e0b040;--warn-soft:#3f3212;--bad:#e06666;--bad-soft:#4a1f1f;
+    --accent:#5f97d8;
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Noto Sans SC",system-ui,sans-serif;
+  font-size:15.5px;line-height:1.8;padding-inline:16px;padding-block:0 96px}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.frame{max-width:1120px;margin:0 auto}
+header{padding-block:52px 28px;border-bottom:1px solid var(--line)}
+.eyebrow{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+h1{font-family:"Songti SC","Noto Serif CJK SC","Noto Serif SC",Georgia,serif;font-weight:700;font-size:clamp(28px,4vw,40px);line-height:1.25;margin:10px 0 14px;text-wrap:balance}
+.lede{color:var(--ink-2);max-width:62em;margin:0}
+.layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:48px;align-items:start}
+nav{position:sticky;top:24px;padding-top:32px;font-size:13.5px}
+nav ol{list-style:none;padding:0;margin:8px 0 0;border-left:1px solid var(--line)}
+nav li a{display:block;padding:4px 0 4px 14px;color:var(--ink-2);border-left:2px solid transparent;margin-left:-1px;line-height:1.45}
+nav li a:hover{color:var(--ink);border-left-color:var(--accent);text-decoration:none}
+nav li.sub a{padding-left:26px;font-size:12.5px;color:var(--ink-3)}
+main{min-width:0;max-width:780px}
+h2{font-family:"Songti SC","Noto Serif CJK SC","Noto Serif SC",Georgia,serif;font-weight:700;font-size:25px;line-height:1.3;margin:60px 0 12px;padding-top:20px;border-top:2px solid var(--ink);text-wrap:balance}
+main h2:first-child{margin-top:32px}
+h3{font-size:17px;font-weight:700;margin:34px 0 8px}
+p{margin:10px 0}
+ul,ol{padding-left:1.4em}li{margin:4px 0}
+code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;font-size:.9em}
+:not(pre)>code{background:var(--code-bg);padding:1px 5px;border-radius:3px}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:6px;padding:14px 16px;overflow-x:auto;font-size:13px;line-height:1.6;margin:14px 0}
+pre code{background:none;padding:0;font-size:inherit}
+.tbl{overflow-x:auto;margin:14px 0}
+table{border-collapse:collapse;width:100%;font-size:13.5px;line-height:1.55;font-variant-numeric:tabular-nums}
+th{text-align:left;font-weight:500;color:var(--ink-2);font-size:12.5px;border-bottom:1.5px solid var(--ink);padding:6px 14px 6px 0;white-space:nowrap}
+td{border-bottom:1px solid var(--line);padding:7px 14px 7px 0;vertical-align:top}
+td:last-child,th:last-child{padding-right:0}
+td.num{text-align:right;font-family:ui-monospace,Menlo,Consolas,monospace;white-space:nowrap}
+
+/* field entries */
+.field{margin:26px 0 0;padding:18px 20px 6px;background:var(--surface);border:1px solid var(--line);border-radius:6px}
+.field-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 14px;margin-bottom:6px}
+.field-head code{font-size:16px;font-weight:600;background:none;padding:0;color:var(--ink)}
+.badge{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;letter-spacing:.04em;padding:2px 7px;border-radius:3px;white-space:nowrap}
+.b-type{background:var(--code-bg);color:var(--ink-2)}
+.b-state{background:var(--cold-soft);color:var(--cold)}
+.b-cum{background:var(--hot-soft);color:var(--hot)}
+.b-inst{background:var(--warn-soft);color:var(--warn)}
+.b-fatal{background:var(--bad-soft);color:var(--bad)}
+.field dl{display:grid;grid-template-columns:5.5em minmax(0,1fr);gap:4px 14px;margin:8px 0 12px}
+.field dt{color:var(--ink-3);font-size:12.5px;letter-spacing:.04em;padding-top:3px}
+.field dd{margin:0}
+.field dd p{margin:4px 0}
+.legend{display:flex;flex-wrap:wrap;gap:10px 18px;margin:14px 0 4px;font-size:13px;color:var(--ink-2)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.bar{display:flex;height:26px;border-radius:3px;overflow:hidden;margin:12px 0 4px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px}
+.bar>div{display:flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden}
+.bar .r{background:var(--hot-soft);color:var(--hot)}
+.bar .s{background:var(--cold-soft);color:var(--cold)}
+.bar .u{border:1px dashed var(--line);color:var(--ink-3)}
+.callout{border-left:3px solid var(--accent);background:var(--surface);padding:10px 18px;border-radius:0 6px 6px 0;margin:16px 0}
+.callout.bad{border-left-color:var(--bad)}
+.callout p{margin:6px 0}
+.foot{margin-top:72px;padding-top:16px;border-top:1px solid var(--line);color:var(--ink-3);font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+@media (max-width:900px){
+  .layout{grid-template-columns:1fr;gap:0}
+  nav{position:static;padding-top:24px}
+  nav ol{columns:2;column-gap:24px}
+  header{padding-block:36px 22px}
+  .field dl{grid-template-columns:1fr}
+  .field dt{padding-top:6px}
+}
+@media print{
+  body{background:#fff;color:#000;font-size:12pt}
+  nav{display:none}.layout{display:block}
+  .field{break-inside:avoid;border-color:#bbb}
+  h2{break-after:avoid}
+}
+</style>
+</head>
+<body>
+<div class="frame">
+<header>
+  <div class="eyebrow">QEMU · Memory Tiering · x-memtier-query</div>
+  <h1>MemTierInfo 字段手册</h1>
+  <p class="lede">
+    <code>x-memtier-query</code> 对每个分层区域返回一个 <code>MemTierInfo</code>。
+    这份手册逐字段说明它是什么、由哪条路径更新、怎么解读、和哪些字段一起看。
+    先讲三类字段的读法，再逐个展开，最后给出派生指标、一致性检查、样例解读和异常速查。
+    离线可读，可直接打印。
+  </p>
+</header>
+
+<div class="layout">
+<nav>
+  <div class="eyebrow">目录</div>
+  <ol>
+    <li><a href="#kinds">先分清三类字段</a></li>
+    <li><a href="#ident">标识与配置</a></li>
+    <li><a href="#capacity">容量与水位</a></li>
+    <li><a href="#counters">累计计数</a></li>
+    <li><a href="#instant">瞬时值</a></li>
+    <li><a href="#latency">缺页延迟分段</a></li>
+    <li><a href="#derived">派生指标</a></li>
+    <li><a href="#invariants">一致性检查</a></li>
+    <li><a href="#example">一个完整样例</a></li>
+    <li><a href="#symptoms">异常速查</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<h2 id="kinds">先分清三类字段</h2>
+<p>返回的 21 个字段按更新方式分三类，读法完全不同：</p>
+<div class="legend">
+  <span><span class="badge b-state">状态</span>当前快照，直接读</span>
+  <span><span class="badge b-cum">累计</span>从 enable 起单调递增，只看差分</span>
+  <span><span class="badge b-inst">瞬时</span>最近一个窗口的值，直接读但有滞后</span>
+</div>
+<ul>
+  <li><b>状态字段</b>回答"现在是什么样"，比如常驻多少字节。两次查询之间可以任意变化。</li>
+  <li><b>累计字段</b>回答"从开启到现在总共发生过多少次"。单个值没有意义，必须用两次查询的差除以时间间隔换算成速率。重新 enable 后从 0 开始。</li>
+  <li><b>瞬时字段</b>由 worker 线程按自己的节拍采样，最长滞后一个节拍（约 200 ms），排水期更新更频繁。</li>
+</ul>
+<p>所有计数由 QEMU 内部用原子操作维护，查询本身不加锁、不暂停任何线程，可以按秒级频率安全轮询。多个状态字段之间不保证同一瞬间一致，差异在一个节拍以内。</p>
+
+<h2 id="ident">标识与配置</h2>
+
+<div class="field" id="f-id">
+  <div class="field-head"><code>id</code><span class="badge b-type">str</span><span class="badge b-state">状态</span></div>
+  <dl>
+    <dt>含义</dt><dd>被分层的 RAM block 名称，例如 x86 机型上主内存是 <code>pc.ram</code>，用 memdev 时是 memdev 的 id。</dd>
+    <dt>怎么用</dt><dd>作为其他命令的 <code>id</code> 参数。只有一个区域时可以省略，引擎默认取最大的客户机 RAM block。</dd>
+    <dt>注意</dt><dd>一台 VM 可能有多个 RAM block（vNUMA 每个节点一个 memdev）。<code>x-memtier-query</code> 不带 <code>id</code> 时返回全部区域，每个区域一条记录，监控要逐条处理再汇总。</dd>
+  </dl>
+</div>
+
+<div class="field" id="f-enabled">
+  <div class="field-head"><code>enabled</code><span class="badge b-type">bool</span><span class="badge b-state">状态</span></div>
+  <dl>
+    <dt>含义</dt><dd>该区域的分层当前是否处于活动状态。</dd>
+    <dt>怎么用</dt><dd>为 false 时其余字段是最后一次 disable 前的残留或零值，不要拿来算速率。监控在 false 时应把该 VM 标为"未分层"而不是画一条零线。</dd>
+    <dt>注意</dt><dd><code>x-memtier-disable</code> 执行期间（同步读回全部换出页，可能持续几十秒）它仍为 true，此时 <code>swapped-bytes</code> 会快速下降到 0，可据此判断 disable 进度。</dd>
+  </dl>
+</div>
+
+<div class="field" id="f-path">
+  <div class="field-head"><code>path</code><span class="badge b-type">str，可选</span><span class="badge b-state">状态</span></div>
+  <dl>
+    <dt>含义</dt><dd>后备设备路径。裸设备如 <code>/dev/nvme1n1p3</code>，预分配文件如 <code>/nvme/tier/vm-a.raw</code>，SPDK 模式是 <code>spdk:0000:5e:00.0</code>。</dd>
+    <dt>怎么用</dt><dd>监控用它找到对应的块设备去读 iostat；共享后备迁移前用它核对两端是否指向同一卷。</dd>
+    <dt>注意</dt><dd>未启用时缺省（字段不出现）。多台 VM 的 path 不允许相同：后备是易失 swap 语义、盘上无元数据，两台 VM 共用一个设备会互相覆盖。</dd>
+  </dl>
+</div>
+
+<div class="field" id="f-policy">
+  <div class="field-head"><code>policy</code><span class="badge b-type">enum</span><span class="badge b-state">状态</span></div>
+  <dl>
+    <dt>含义</dt><dd>当前生效的预设：<code>conservative</code> / <code>balanced</code> / <code>aggressive</code> / <code>custom</code>。</dd>
+    <dt>怎么用</dt><dd>只是一个标签。真正决定行为的是下面的 <code>tunables</code>，因为覆盖值会压在预设之上。看到 <code>balanced</code> 不等于所有旋钮都是 balanced 的默认值。</dd>
+  </dl>
+</div>
+
+<div class="field" id="f-tunables">
+  <div class="field-head"><code>tunables</code><span class="badge b-type">MemTierTunables</span><span class="badge b-state">状态</span></div>
+  <dl>
+    <dt>含义</dt><dd><b>解析并钳制之后的生效值</b>，不是用户输入的原始值。每个字段都会出现，即使用户从未设置过。</dd>
+    <dt>怎么用</dt><dd>
+      <p>这是唯一能确认"引擎现在到底按什么参数在跑"的地方。几个典型的差异：</p>
+      <ul>
+        <li>用预设时 <code>min-resident-mb</code> 显示的是按区域大小算出来的具体 MB 数，不是百分比。</li>
+        <li>没设过 <code>target-resident-mb</code> 时它等于 <code>min-resident-mb</code>，表示主动换回关闭。</li>
+        <li>设了 <code>swapin-watermark ≥ psi-trigger</code> 时这里显示的是被钳到 0.9 倍后的值。</li>
+        <li>设了 <code>idle-streak: 0</code> 时这里显示 1。</li>
+      </ul>
+    </dd>
+    <dt>注意</dt><dd>监控面板上"当前下限 / 上限 / 是否武装"三个显示项就从这里取 <code>min-resident-mb</code>、<code>target-resident-mb</code>、<code>psi-trigger</code>。</dd>
+  </dl>
+</div>
+
+<h2 id="capacity">容量与水位</h2>
+<p>六个字节数分两组：三个描述客户机内存在哪里，三个描述后备设备的空间。</p>
+
+<div class="bar" aria-hidden="true">
+  <div class="r" style="flex:56">resident 56%</div>
+  <div class="s" style="flex:37">swapped 37%</div>
+  <div class="u" style="flex:7">未触碰</div>
+</div>
+<p style="font-size:13px;color:var(--ink-3);margin-top:0">一个区域的 total-bytes 由三部分构成。第三部分没有字段，是算出来的。</p>
+
+<div class="field" id="f-total">
+  <div class="field-head"><code>total-bytes</code><span class="badge b-type">uint64</span><span class="badge b-state">状态</span></div>
+  <dl>
+    <dt>含义</dt><dd>区域大小，即这个 RAM block 的字节数。启用后不变。</dd>
+    <dt>怎么用</dt><dd>所有比例的分母。也是页元数据规模的依据：每 4K 页 8 字节元数据，32 GB 区域对应 64 MB。</dd>
+  </dl>
+</div>
+
+<div class="field" id="f-resident">
+  <div class="field-head"><code>resident-bytes</code><span class="badge b-type">uint64</span><span class="badge b-state">状态</span></div>
+  <dl>
+    <dt>含义</dt><dd>当前在宿主机 DRAM 里、且已经被客户机触碰过的页的字节数。状态机里 RESIDENT、EVICTING、EVICTING_DIRTIED 三态的页都算。</dd>
+    <dt>更新</dt><dd>换出完成时减 4K（worker），换入完成时加 4K（fault 线程或主动换回）。enable 时按 pagemap 统计真实在内存的页数作为初值，而不是假设全部常驻。</dd>
+    <dt>怎么用</dt><dd>
+      <p>这是最重要的水位。对照 <code>tunables.min-resident-mb</code>：</p>
+      <ul>
+        <li>强制排水（psi-trigger=0）下它应该在几秒到几十秒内落到下限。</li>
+        <li>停在下限之上排不下去：冷页不够，工作集比下限大；或者 page_idle 失效在等 write-aging 回退（连续 30 个窗口后自动切换）。</li>
+        <li>在下限附近反复小幅上下：换出与换入乒乓，需要加 <code>hysteresis-mb</code>。</li>
+      </ul>
+    </dd>
+    <dt>注意</dt><dd>它<b>不是</b>宿主机对这台 VM 的 RSS。QEMU 自身的堆、设备模拟缓冲、其他未分层的 RAM block 都不在里面。要看进程真实占用仍需读 cgroup 的 memory.current。</dd>
+  </dl>
+</div>
+
+<div class="field" id="f-swapped">
+  <div class="field-head"><code>swapped-bytes</code><span class="badge b-type">uint64</span><span class="badge b-state">状态</span></div>
+  <dl>
+    <dt>含义</dt><dd>当前内容只存在于后备设备上、宿主机物理页已释放的页的字节数。状态机里 SWAPPED 和 FAULTING_IN 两态。</dd>
+    <dt>更新</dt><dd>换出完成时加 4K，换入完成（被动或主动）时减 4K。</dd>
+    <dt>怎么用</dt><dd>
+      <p>这部分内存<b>不占宿主机 DRAM</b>。它是"借出去"的量，主机内存构成图上应作为独立段画出来，让 DRAM 恒等式闭合：</p>
+      <pre><code>DRAM = 内核 + 预留 + Σ resident + 空闲      （Σ swapped 不在等式里）</code></pre>
+      <p>换出比例 = swapped / total，是"这台 VM 超分到多深"的直接度量。</p>
+    </dd>
+    <dt>注意</dt><dd><code>resident + swapped ≤ total</code>，差值是客户机从未触碰过的页，既不占 DRAM 也不占盘。刚启动的 VM 差值很大，运行越久越小。</dd>
+  </dl>
+</div>
+
+<div class="field" id="f-btotal">
+  <div class="field-head"><code>backing-total-bytes</code><span class="badge b-type">uint64</span><span class="badge b-state">状态</span></div>
+  <dl>
+    <dt>含义</dt><dd>后备设备容量，enable 时从设备或文件大小取得。</dd>
+    <dt>怎么用</dt><dd>容量规划的校验：至少要能装下 <code>total − min-resident</code>，否则排水到下限之前就会满。上限 2 TB（29 位 slot × 4K）。</dd>
+  </dl>
+</div>
+
+<div class="field" id="f-bused">
+  <div class="field-head"><code>backing-used-bytes</code><span class="badge b-type">uint64</span><span class="badge b-state">状态</span></div>
+  <dl>
+    <dt>含义</dt><dd>后备设备上已分配的 slot 字节数。</dd>
+    <dt>更新</dt><dd>换出提交前分配（加），换入完成、换出回滚、写失败时归还（减）。</dd>
+    <dt>怎么用</dt><dd>
+      <p>后备使用率 = used / backing-total。接近 100% 会触发 <code>MEMTIER_BACKING_FULL</code> 事件，换出暂停。</p>
+      <p>它通常略大于 <code>swapped-bytes</code>：差值是正在换出中（EVICTING，已分配 slot 但还没完成）的页。稳态下两者相等。</p>
+    </dd>
+    <dt>注意</dt><dd>这是逻辑分配量，不是设备的物理写入量。设备 iostat 的累计写字节会远大于它，因为同一个 slot 会被反复分配、写入、释放。</dd>
+  </dl>
+</div>
+
+<div class="field" id="f-bfree">
+  <div class="field-head"><code>backing-largest-free-bytes</code><span class="badge b-type">uint64</span><span class="badge b-state">状态</span></div>
+  <dl>
+    <dt>含义</dt><dd>后备设备上最大的一段连续空闲空间。</dd>
+    <dt>怎么用</dt><dd>
+      <p>碎片度指标。换出是按连续段（最多 128 页 = 512 KB）申请空间的，申请不到整段时会拆成小写。定义：</p>
+      <pre><code>碎片度 = 1 − largest-free / (backing-total − backing-used)</code></pre>
+      <p>接近 0 表示空闲空间基本连成一片；接近 1 表示被切碎。碎片度高时 <code>evict-mbps</code> 会掉，因为顺序大写退化成随机小写。</p>
+    </dd>
+    <dt>注意</dt><dd>碎片来自散点换入：换出是连续段，换入是随机单页，释放的 slot 在空闲空间里形成空洞。分配器释放时会合并相邻空洞，碎片随时间自然收敛，不需要人工整理。<code>largest-free &lt; 512 KB</code> 但总空闲还很多，是碎片化严重的信号。</dd>
+  </dl>
+</div>
+
+<h2 id="counters">累计计数</h2>
+<p>五个页计数，从 enable 起单调递增。用法只有一种：<b>两次查询做差，除以间隔秒数</b>。</p>
+
+<div class="field" id="f-evicted">
+  <div class="field-head"><code>evicted-pages</code><span class="badge b-type">uint64，页</span><span class="badge b-cum">累计</span></div>
+  <dl>
+    <dt>含义</dt><dd>成功换出的页数：写盘完成、确认未被写脏、物理页已释放。</dd>
+    <dt>更新</dt><dd>worker 线程，换出完成裁决为"干净"时加 1。</dd>
+    <dt>怎么用</dt><dd>
+      <p>换出速率（页/秒）= Δevicted / Δt。乘 4096 是字节速率，与 <code>evict-mbps</code> 应基本一致（后者是引擎内的 1 秒滚动窗口，前者是你的采样窗口）。</p>
+      <p>也是误逐率的分母。</p>
+    </dd>
+    <dt>注意</dt><dd>同一页被换出、换入、再换出会计数两次。所以它可以远大于 total 的页数，这是正常的。</dd>
+  </dl>
+</div>
+
+<div class="field" id="f-aborts">
+  <div class="field-head"><code>evict-aborts</code><span class="badge b-type">uint64，页</span><span class="badge b-cum">累计</span></div>
+  <dl>
+    <dt>含义</dt><dd>换出被回滚的页数：加了写保护、写盘期间客户机写了这页（WP 故障），完成时发现已脏，回滚为 RESIDENT。也包括写盘失败的回滚。</dd>
+    <dt>更新</dt><dd>worker 线程，换出完成裁决为"脏"或"失败"时加 1。</dd>
+    <dt>怎么用</dt><dd>
+      <p>这是<b>选页质量</b>最直接的指标。扫描器认为冷的页，在换出的几毫秒窗口内就被写了，说明它其实是写热页。</p>
+      <pre><code>误逐率 = Δevict-aborts / (Δevicted-pages + Δevict-aborts)</code></pre>
+      <p>（分母用"尝试换出的总页数"更准确；文档里简写为 aborts/evicted，量级相同。）</p>
+    </dd>
+    <dt>解读</dt><dd>
+      <div class="tbl"><table>
+        <tr><th>误逐率</th><th>含义</th><th>处置</th></tr>
+        <tr><td class="num">&lt; 1%</td><td>选页质量好</td><td>无</td></tr>
+        <tr><td class="num">1% ~ 5%</td><td>工作集边界附近有抖动</td><td>加 <code>hysteresis-mb</code>，或延长 <code>cooldown-ms</code></td></tr>
+        <tr><td class="num">&gt; 5%</td><td>在啃写热页</td><td>调大 <code>cold-runs</code> / <code>idle-streak</code>，或换 conservative</td></tr>
+        <tr><td class="num">&gt; 20%</td><td>热度识别基本失效</td><td>检查是否掉进 write-aging 回退、客户机内存是否被 THP 背书</td></tr>
+      </table></div>
+    </dd>
+    <dt>注意</dt><dd>write-aging 回退模式下这个值天然偏高，因为回退模式就是靠"换出被写脏"来过滤写热页的。回退模式下 10% 以内都算正常。</dd>
+  </dl>
+</div>
+
+<div class="field" id="f-faults">
+  <div class="field-head"><code>swapin-faults</code><span class="badge b-type">uint64，页</span><span class="badge b-cum">累计</span></div>
+  <dl>
+    <dt>含义</dt><dd>被动换入次数：客户机访问已换出页，触发 MISSING 缺页，fault 线程从后备读回。</dd>
+    <dt>更新</dt><dd>fault 线程，每完成一次读回并 UFFDIO_COPY 填入加 1。多个 vCPU 同时踩到同一页只计 1 次（并发缺页者共享一次读）。</dd>
+    <dt>怎么用</dt><dd>
+      <p>缺页速率（次/秒）= Δswapin-faults / Δt。这是<b>客户机正在付出多少延迟代价</b>的直接度量：每次缺页 vCPU 硬停驻 20 到 100 µs。</p>
+      <ul>
+        <li>热集负载稳态下应趋近 0。</li>
+        <li>刚排水完的几分钟内偏高是正常的收敛过程，随后应下降。</li>
+        <li>持续高（例如 &gt; 10000 次/秒）说明换出过度：读热页被误换出。写热页会被 evict-aborts 挡住，但 write-aging 回退模式看不到读热度，只能靠这个指标发现。</li>
+      </ul>
+    </dd>
+    <dt>注意</dt><dd>从未触碰过的页首次访问走 UFFDIO_ZEROPAGE 直接给零页，<b>不计入</b>这个计数，也不产生盘读。</dd>
+  </dl>
+</div>
+
+<div class="field" id="f-errors">
+  <div class="field-head"><code>swapin-errors</code><span class="badge b-type">uint64</span><span class="badge b-cum">累计</span><span class="badge b-fatal">致命</span></div>
+  <dl>
+    <dt>含义</dt><dd>从后备设备读回失败的次数。</dd>
+    <dt>怎么用</dt><dd>
+      <p><b>正常值永远是 0。</b>页内容此刻只存在于后备设备上，读不回就是数据丢失，引擎会发 <code>MEMTIER_SWAPIN_ERROR</code> 事件并让 QEMU 退出。所以实际上你很难查到非零值：查到的时候 VM 已经没了。</p>
+      <p>监控应订阅事件而不是轮询这个字段。</p>
+    </dd>
+    <dt>注意</dt><dd>主动换回的读失败<b>不</b>计入这里，也不致命：它恢复 SWAPPED 状态让被动路径重试。</dd>
+  </dl>
+</div>
+
+<div class="field" id="f-active">
+  <div class="field-head"><code>active-swapins</code><span class="badge b-type">uint64，页</span><span class="badge b-cum">累计</span></div>
+  <dl>
+    <dt>含义</dt><dd>主动换回的页数：不是客户机访问触发的，是控制器在宿主机空闲时按"最近换出优先"预取回来的。</dd>
+    <dt>更新</dt><dd>worker 线程每个节拍执行主动换回，每成功一页加 1。</dd>
+    <dt>怎么用</dt><dd>
+      <p>主动换回速率 = Δactive-swapins × 4096 / Δt，应不超过 <code>tunables.max-swapin-mbps</code>。</p>
+      <p><code>target-resident-mb == min-resident-mb</code> 时主动换回关闭，这个值不会增长。</p>
+      <p>被动 + 主动的总换入 = Δswapin-faults + Δactive-swapins，才是后备设备承受的全部读压力。</p>
+    </dd>
+    <dt>注意</dt><dd>主动换回的页如果恰好有客户机缺页停驻在上面，那一次 UFFDIO_COPY 同时满足两者，只计入 active-swapins。</dd>
+  </dl>
+</div>
+
+<h2 id="instant">瞬时值</h2>
+
+<div class="field" id="f-mbps">
+  <div class="field-head"><code>evict-mbps</code><span class="badge b-type">uint32，MB/s</span><span class="badge b-inst">瞬时</span></div>
+  <dl>
+    <dt>含义</dt><dd>最近 1 秒滚动窗口内的换出吞吐。</dd>
+    <dt>更新</dt><dd>worker 线程按窗口统计，同一个值也用于 <code>max-evict-mbps</code> 限速判断。</dd>
+    <dt>怎么用</dt><dd>
+      <ul>
+        <li>排水期应贴近 <code>tunables.max-evict-mbps</code>。明显低于上限：后备设备写带宽不够、或碎片化导致大写拆小、或冷页供给不足（扫描找不到那么多冷页）。</li>
+        <li>稳态应接近 0。长期不为 0 说明宿主机持续有压力在持续排水，或者和换入形成了乒乓（对照缺页速率）。</li>
+      </ul>
+    </dd>
+    <dt>注意</dt><dd>它是 uint32 的 MB/s，精度只到 1 MB/s，低速时显示 0。要看细粒度用 Δevicted-pages 差分。</dd>
+  </dl>
+</div>
+
+<div class="field" id="f-psi">
+  <div class="field-head"><code>psi-some-avg10</code><span class="badge b-type">number，%</span><span class="badge b-inst">瞬时</span></div>
+  <dl>
+    <dt>含义</dt><dd>worker 最近一次采样到的宿主机 <code>/proc/pressure/memory</code> 的 <code>some avg10</code>：过去 10 秒内有任务在等内存的时间占比。</dd>
+    <dt>怎么用</dt><dd>
+      <p>对照两道门：</p>
+      <ul>
+        <li><code>psi ≥ tunables.psi-trigger</code> 才允许换出。</li>
+        <li><code>psi &lt; tunables.swapin-watermark</code> 才允许主动换回。</li>
+      </ul>
+      <p>用它解释"为什么没在换出"：resident 高于下限但 evict-mbps 为 0，先看 psi 是否低于 trigger。</p>
+    </dd>
+    <dt>注意</dt><dd>这是宿主机全局值，所有 VM 查到的都一样（采样时刻略有差异）。有主机级控制器时它把 psi-trigger 设成 0 或 100，这个字段就只剩参考意义。</dd>
+  </dl>
+</div>
+
+<h2 id="latency">缺页延迟分段</h2>
+<p>较新版本增加的三个字段，把一次被动换入在 QEMU 内可见的部分拆成三段，都是<b>累计平均值</b>（纳秒）。它们回答"缺页慢在哪一段"。</p>
+
+<pre><code>客户机访问已换出页
+  │  ← 约 5 µs：VM-exit、uffd 入队、vCPU 睡眠（QEMU 看不见）
+  ▼
+fault 线程拾取故障 ──── swapin-avg-wait-ns ────► 提交读
+  ▼
+后备设备读 4K ───────── swapin-avg-device-ns ──► 读完成
+  ▼
+UFFDIO_COPY 填入 ────── swapin-avg-publish-ns ─► vCPU 被唤醒
+  │  ← 约 2 µs：VM-entry、EPT 二次缺页（QEMU 看不见）
+  ▼
+客户机继续执行</code></pre>
+
+<div class="field" id="f-wait">
+  <div class="field-head"><code>swapin-avg-wait-ns</code><span class="badge b-type">uint64，ns</span><span class="badge b-inst">累计平均</span></div>
+  <dl>
+    <dt>含义</dt><dd>fault 线程从 uffd 读到故障消息，到把读请求提交给后备设备之间的平均耗时。</dd>
+    <dt>怎么用</dt><dd>
+      <p>反映 fault 线程本身的响应能力。</p>
+      <div class="tbl"><table>
+        <tr><th>量级</th><th>状态</th></tr>
+        <tr><td class="num">0.2 µs</td><td>fault 线程独占核忙轮询（SPDK 模式），已到极限</td></tr>
+        <tr><td class="num">5 ~ 20 µs</td><td>io_uring 模式、不绑核：含一次调度唤醒</td></tr>
+        <tr><td class="num">&gt; 50 µs</td><td>fault 线程在和别的负载抢 CPU，或缺页并发超过 bounce 池（64）在等回收</td></tr>
+      </table></div>
+    </dd>
+  </dl>
+</div>
+
+<div class="field" id="f-device">
+  <div class="field-head"><code>swapin-avg-device-ns</code><span class="badge b-type">uint64，ns</span><span class="badge b-inst">累计平均</span></div>
+  <dl>
+    <dt>含义</dt><dd>从提交读到读完成的平均耗时，即后备设备的 4K 读延迟（含队列等待）。</dd>
+    <dt>怎么用</dt><dd>
+      <p>它应接近介质的裸延迟：Optane 10 ~ 12 µs，企业级 NVMe 50 ~ 80 µs，消费级 NVMe 80 ~ 100 µs。</p>
+      <p>明显高于裸延迟，几乎总是<b>读在等写</b>：NVMe 没有抢占，换出的 512 KB 大写在飞时，后面的读要等它完成。写带宽慢的盘上这条尾巴可以到毫秒级，实测读尾延迟 ≈ 在飞写字节 ÷ 写带宽。处置是调小 <code>max-evict-mbps</code>。</p>
+      <p>排除了换出干扰仍然高：盘在退化，或同一块盘上有别的负载。后备设备应独占。</p>
+    </dd>
+    <dt>注意</dt><dd>这是平均值，尾延迟看不到。要看尾延迟用设备侧 iostat 的 <code>r_await</code> 或客户机内探针。</dd>
+  </dl>
+</div>
+
+<div class="field" id="f-publish">
+  <div class="field-head"><code>swapin-avg-publish-ns</code><span class="badge b-type">uint64，ns</span><span class="badge b-inst">累计平均</span></div>
+  <dl>
+    <dt>含义</dt><dd>从读完成到 UFFDIO_COPY 返回（页已填入、vCPU 已唤醒）的平均耗时。</dd>
+    <dt>怎么用</dt><dd>
+      <p>正常 3 ~ 4 µs。其中 memcpy 4K 只占 0.3 µs，大头是内核分配页、建页表、唤醒等待者。这一段基本是固定成本，不受配置影响。</p>
+      <p>明显变大：宿主机内存分配变慢（碎片化、正在直接回收），或 THP 相关的页表操作。这时通常宿主机整体已经有压力，对照 <code>psi-some-avg10</code>。</p>
+    </dd>
+  </dl>
+</div>
+
+<div class="callout">
+  <p><b>三段之和</b>加上 QEMU 看不见的约 7 µs（VM-exit/entry 各一次、uffd 入队、vCPU 睡眠唤醒、EPT 二次缺页）就是客户机感受到的一次缺页延迟。最好的配置（Optane、SPDK、绑核）下总计约 21 µs，其中器件占一半。</p>
+</div>
+
+<h2 id="derived">派生指标</h2>
+<p>面板上真正要画的大多是派生量。全部从两次查询（间隔 Δt 秒）算出：</p>
+<div class="tbl"><table>
+  <tr><th>指标</th><th>公式</th><th>单位</th><th>用途</th></tr>
+  <tr><td>常驻比例</td><td><code>resident / total</code></td><td>%</td><td>对照下限，看排水是否到位</td></tr>
+  <tr><td>换出比例</td><td><code>swapped / total</code></td><td>%</td><td>超分深度</td></tr>
+  <tr><td>未触碰比例</td><td><code>1 − (resident + swapped) / total</code></td><td>%</td><td>刚启动的 VM 很大，可用来判断 VM 是否"热身完毕"</td></tr>
+  <tr><td>换出速率</td><td><code>Δevicted-pages × 4096 / Δt</code></td><td>B/s</td><td>与 evict-mbps 互相印证</td></tr>
+  <tr><td>被动换入速率</td><td><code>Δswapin-faults / Δt</code></td><td>次/s</td><td>客户机付出的缺页代价</td></tr>
+  <tr><td>主动换回速率</td><td><code>Δactive-swapins × 4096 / Δt</code></td><td>B/s</td><td>回血进度</td></tr>
+  <tr><td>后备读压力</td><td><code>(Δswapin-faults + Δactive-swapins) / Δt</code></td><td>IOPS</td><td>对照设备 IOPS 上限</td></tr>
+  <tr><td>误逐率</td><td><code>Δevict-aborts / (Δevicted-pages + Δevict-aborts)</code></td><td>%</td><td>选页质量</td></tr>
+  <tr><td>后备使用率</td><td><code>backing-used / backing-total</code></td><td>%</td><td>满盘预警</td></tr>
+  <tr><td>后备碎片度</td><td><code>1 − largest-free / (backing-total − backing-used)</code></td><td>0..1</td><td>解释 evict-mbps 掉速</td></tr>
+  <tr><td>在途换出量</td><td><code>backing-used − swapped</code></td><td>B</td><td>正在写盘、尚未裁决的页；稳态应为 0</td></tr>
+  <tr><td>缺页均延迟（QEMU 内）</td><td><code>wait + device + publish</code></td><td>ns</td><td>加约 7 µs 得客户机感受值</td></tr>
+  <tr><td>主动换回是否开启</td><td><code>tunables.target &gt; tunables.min</code></td><td>bool</td><td>面板状态位</td></tr>
+  <tr><td>换出门是否开着</td><td><code>psi-some-avg10 ≥ tunables.psi-trigger</code></td><td>bool</td><td>解释"为什么不换"</td></tr>
+</table></div>
+<p>采样间隔建议 5 秒。累计计数是 64 位，不会回绕；重新 enable 会归零，采集器检测到值变小就重置基线。</p>
+
+<h2 id="invariants">一致性检查</h2>
+<p>这些关系在任何一次查询里都应成立（允许一个节拍内的微小偏差）。采集器可以用它们做自检，不成立说明查询结果来自 disable 过程中或引擎异常：</p>
+<div class="tbl"><table>
+  <tr><th>关系</th><th>说明</th></tr>
+  <tr><td><code>resident + swapped ≤ total</code></td><td>差值是未触碰页</td></tr>
+  <tr><td><code>swapped ≤ backing-used ≤ backing-total</code></td><td>差值是在途换出</td></tr>
+  <tr><td><code>largest-free ≤ backing-total − backing-used</code></td><td>最大连续空闲不超过总空闲</td></tr>
+  <tr><td><code>tunables.min ≤ tunables.target ≤ total/MB</code></td><td>工作带不变式，引擎钳制保证</td></tr>
+  <tr><td><code>tunables.swapin-watermark &lt; tunables.psi-trigger</code></td><td>换出与换回的 PSI 区间不相交，引擎钳制保证</td></tr>
+  <tr><td><code>Δevicted ≈ Δswapped/4096 + Δfaults + Δactive</code></td><td>换出的页要么还在盘上，要么已被换回（在一个采样窗口内近似成立）</td></tr>
+  <tr><td><code>swapin-errors == 0</code></td><td>非零意味着 VM 正在退出</td></tr>
+</table></div>
+
+<h2 id="example">一个完整样例</h2>
+<p>8 GB 客户机，后备 16 GB 消费级 NVMe 分区，balanced 预设并覆盖了下限。两次查询间隔 5 秒。</p>
+
+<pre><code>第 1 次                                第 2 次（5 秒后）
+"total-bytes":          8589934592      8589934592
+"resident-bytes":       4831838208      4563402752
+"swapped-bytes":        3221225472      3489660928
+"backing-total-bytes": 17179869184     17179869184
+"backing-used-bytes":   3221225472      3490709504
+"backing-largest-free-bytes": 13958643712  13689159680
+"evicted-pages":           1843200         1911296
+"evict-aborts":              12034           12410
+"swapin-faults":           1056768         1058304
+"swapin-errors":                 0               0
+"active-swapins":                0               0
+"evict-mbps":                    0              52
+"psi-some-avg10":              0.4            12.3
+"swapin-avg-wait-ns":         8200            8400
+"swapin-avg-device-ns":      91000           97000
+"swapin-avg-publish-ns":      3600            3600
+"tunables": { "min-resident-mb": 4096, "target-resident-mb": 4096,
+              "psi-trigger": 10, "swapin-watermark": 5, ... }</code></pre>
+
+<p>逐项解读：</p>
+<ol>
+  <li><b>宿主机压力刚起来。</b>psi 从 0.4 涨到 12.3，超过了 trigger 10，换出门打开。第 1 次查询时 evict-mbps 为 0 是因为门还没开，不是坏了。</li>
+  <li><b>正在排水。</b>resident 从 4.5 GB 降到 4.25 GB，5 秒减了 256 MB，约 51 MB/s，与 evict-mbps 52 吻合。Δevicted = 68096 页 × 4K = 266 MB，也吻合。</li>
+  <li><b>离下限还有 156 MB。</b>4.25 GB − 4096 MB。按这个速度 3 秒后到底。之所以只有 52 MB/s 而不是上限 500，是 PSI 刚过线、扫描批次还小，下一次查询应看到更高。</li>
+  <li><b>选页质量正常。</b>Δaborts = 376，Δevicted = 68096，误逐率 0.55%。</li>
+  <li><b>客户机基本没在付代价。</b>Δfaults = 1536，即 307 次/秒缺页，很低。排水刚开始，被换出的确实是冷页。</li>
+  <li><b>后备健康。</b>使用率 20%；在途换出 = used − swapped = 1 MB，正常；碎片度 = 1 − 13.69/13.69 ≈ 0。</li>
+  <li><b>器件延迟略升。</b>device 从 91 µs 到 97 µs，是换出写开始挤占读。消费级 NVMe 的裸延迟就在 90 µs 上下，这个幅度可以接受；如果涨到 300 µs 以上就该压 max-evict-mbps。</li>
+  <li><b>主动换回关闭。</b>target == min，active-swapins 为 0 是预期的。</li>
+</ol>
+
+<h2 id="symptoms">异常速查</h2>
+<p>从症状反查该看哪几个字段：</p>
+<div class="tbl"><table>
+  <tr><th>症状</th><th>看这些字段</th><th>最可能的原因</th><th>处置</th></tr>
+  <tr><td>resident 高于下限但不下降</td><td>psi-some-avg10 vs psi-trigger</td><td>换出门没开</td><td>正常；要强制排水设 psi-trigger=0</td></tr>
+  <tr><td>门开着、evict-mbps 为 0、resident 不降</td><td>evicted-pages 是否增长；日志</td><td>扫描找不到冷页：工作集大于下限，或 page_idle 失效（等回退）</td><td>看日志有无 write-aging fallback；检查 THP；调大下限</td></tr>
+  <tr><td>evict-mbps 远低于 max-evict-mbps</td><td>backing-largest-free；设备 w_await</td><td>碎片化拆小写；或盘写带宽不够</td><td>等碎片收敛；换更快的盘</td></tr>
+  <tr><td>resident 在下限附近反复小幅波动</td><td>evict-mbps 和 Δswapin-faults 同时非零</td><td>换出↔换入乒乓</td><td>加 hysteresis-mb，延长 cooldown-ms</td></tr>
+  <tr><td>误逐率 &gt; 5%</td><td>evict-aborts / evicted-pages</td><td>在啃写热页</td><td>调大 cold-runs / idle-streak</td></tr>
+  <tr><td>缺页速率持续很高</td><td>Δswapin-faults；resident vs 工作集</td><td>换出过度，或回退模式看不到读热度</td><td>调大下限；开主动换回；排查 THP</td></tr>
+  <tr><td>device-ns 远高于介质裸延迟</td><td>evict-mbps 是否同时高；设备 r_await</td><td>读在等换出的写；盘被共用；盘退化</td><td>调小 max-evict-mbps；后备独占</td></tr>
+  <tr><td>wait-ns 突然变大</td><td>fault 线程所在核的负载</td><td>fault 线程被抢占；缺页并发超过 bounce 池</td><td>给 fault 线程独占核；更快器件上开 fault-shards</td></tr>
+  <tr><td>收到 BACKING_FULL 事件</td><td>backing-used / backing-total</td><td>后备容量小于 total − 下限</td><td>调高下限；换更大后备（需 disable 重开）</td></tr>
+  <tr><td>swapped 快速降到 0、resident 涨回</td><td>enabled 仍为 true</td><td>正在执行 disable</td><td>等待完成</td></tr>
+  <tr><td>target &gt; min 但 active-swapins 不增长</td><td>psi-some-avg10 vs swapin-watermark；resident vs target</td><td>PSI 门没开，或 resident 已达 target</td><td>正常；确认 watermark 未被钳到过低</td></tr>
+  <tr><td>收到 SWAPIN_ERROR 事件</td><td>swapin-errors</td><td>后备设备读失败</td><td>VM 即将退出，走故障恢复；检查盘</td></tr>
+</table></div>
+
+<div class="foot">依据 QEMU 10.0 memory-tiering 分支 qapi/memtier.json 与 2026-08 基准测试中新增的延迟分段字段 · 2026-09-11</div>
+</main>
+</div>
+</div>
+</body>
+</html>
