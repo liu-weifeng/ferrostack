@@ -750,3 +750,28 @@ xvirt-autotest 加 stage（plan validate/apply 幂等性、缩池阻塞、互斥
   sysctl drop-in），否则内核会按页扫描把控制器刚搬好的页再挪走并制造 EPT 抖动。
 - **vfio / 1G 大页 / vNUMA VM 不可自动搬**：pin 页不能迁、1G 需目标有空闲页且慢、
   vNUMA 缺 per-memdev 迁移原语（待 `x-memdev-rebind`）——统一强制 manual，UI 标明原因。
+
+---
+
+## §9 实现落点（2026-09-11，P0 + P1 主体，含 P2/P3/P4 的基础部分）
+
+| 组件 | 文件 | 内容 |
+|---|---|---|
+| 宿主机代理 | `hyper-agent/hyper_agent/support/resource_plan/topology.py` | sysfs/cgroupfs 扫描：逐 CPU 拓扑、HT 配对、NUMA 内存与大页、各 slice 实际 cpuset/memory.*、分区状态、根下全部子 cgroup cpuset、内核残差 |
+| 宿主机代理 | `.../resource_plan/plan.py` | plan 默认生成（小机器退化）、normalize、§4.4 校验规则（纯函数）、预算不等式、diff |
+| 宿主机代理 | `.../resource_plan/apply.py` | 幂等 reconcile：`systemctl set-property` 下 AllowedCPUs/AllowedMemoryNodes/MemoryMin\|High\|Max；大页 per-node sysfs（2M compact 重试、1G 降级 pending_reboot）；`+hugetlb` 与 hugetlb.*.max 圈占；spdk.slice isolated 分区 + IRQ/workqueue 驱离 + irqbalance drop-in；`kernel.numa_balancing=0`；平台服务 `Slice=virt.slice` drop-in（pending_restart）；本地缓存 `/etc/xvirt/resource-plan.json`；drift 对比 |
+| 宿主机代理 | `.../resource_plan/cli.py` + `etc/systemd/xvirt-resource-plan.service` | 开机早期单元（`Before=sysinit.target`）重放缓存，大页优先；`xvirt-resource-plan status/topology/validate/default` |
+| 宿主机代理 | `hyper_agent/controller/resource_plan.py` | ZMQ actions：`scan_cpu_topology` / `get_resource_plan` / `validate_resource_plan` / `apply_resource_plan` / `tiering_host_status`；apply 后发 `host.resource_plan_applied` 事件并让内存分层总控重读水位线 |
+| 宿主机代理 | `metrics_exporter/collectors/resource_plan.py` | `xvirt_cpu_busy_ratio{cpu,pool,node}`、`xvirt_pool_*`、`xvirt_slice_*`（含 virt.slice 下逐 service）、`xvirt_node_mem_bytes`、`xvirt_hugepages*`、`xvirt_vm_tiering_*`、`xvirt_host_tiering_*` |
+| 宿主机代理 | `support/memtier/controller.py` | P4：水位线/PSI 满刻度/VM 池预算从 plan 缓存读；VM 池挤占度并入压力合成；每拍快照供 collector 与 `tiering_host_status` 复用（不双倍 QMP） |
+| 宿主机代理 | `vm/guest.py`、`shell.py`、`controller/vm.py`、`setup.cfg` | `placement.json` sidecar（create/update）；controller 注册 + 启动对账线程；`vm_pin_vcpus`/`vm_unpin_vcpus`/`vm_placement_status` 转发；包与 console_script |
+| 虚拟机监控服务 | `lictor/support/placement.py` | scope 规格（浮动挂 `machine-shared.slice`，绑定/独占挂 `machine.slice` 并显式 AllowedCPUs/AllowedMemoryNodes/CPUWeight/MemoryMin）；`systemd-run --scope` 前缀；`memory.oom.group=1`；`query-cpus-fast` + `sched_setaffinity` 绑核/解绑（顺序守 §3.10.4）；运行时 `set-property --runtime` 改 scope；存量 QEMU 经 D-Bus `StartTransientUnit(PIDs)` 迁入 scope；`numa_maps` 聚合 |
+| 虚拟机监控服务 | `lictor/vm/guest.py`、`utils/process.py`、`operation_server.py`、`controller/vm.py` | launch 在 exec 前入 scope（失败降级直起）；启动后 oom.group + 绑核；live op `placement_set`；启动时 `reconcile_scopes`；三个新 action |
+| 虚拟机监控服务 | `lictor/support/qemu_command.py` | `mem_backend`：memfd（prealloc=on）/ hugepage-2m / hugepage-1g（memfd hugetlb）；`numa_mode=vnuma` 逐 vnode memdev + `-numa node` |
+| 管理服务 | `ferrovirt/src/service/resource_plan.rs` | 表 `host_resource_plan` / `host_cpu_topology` / `host_numa_node`，`vm_config` 放置列；拓扑落库与 DB 兜底；plan 读（DB 权威 + agent 实况 drift/预算）；validate；PUT → version 乐观锁（409）→ 前置校验 → 任务 `applyResourcePlan`；init；内存分层聚合；VM placement 校验/写列/回放 |
+| 管理服务 | `src/controller/vcenter/resource_plan.rs` | `GET/POST …/resource-topology`、`GET/PUT/POST …/resource-plan?action=validate\|init`、`GET …/memory-tiering`、`GET /vm/{vm}/placement` |
+| 管理服务 | `vm_update.rs` / `vm_create.rs` / `read/vm.rs` / `storage_net.rs` / `read/metrics.rs` / `error.rs` | PATCH `placement` 稀疏段 + 热调 live op；建 VM 带 placement；VM 详情暴露 placement；hardware-scan 顺带拓扑落库；指标 label 白名单；`Conflict` 409 |
+| Web 控制台 | `xvirt-client/src/components/host/resplan/*` | `ResourcePlanTab`（查看/编辑、草稿 diff、校验、应用任务跟踪、横幅）、`CpuTopologyBoard`（核→池拖拽/多选、VM→核独占绑定）、`MemoryBoard`（主机级预算条 + 逐节点大页条，Pointer 手柄）、`TieringBoard`（压力计 + 可拖水位线 + 逐 VM 条）、`VmPlacementList` + 放置对话框（PATCH placement）、`planModel.js`（派生/diff/轻量校验） |
+| Web 控制台 | `HostDashboardPage.jsx` / `App.jsx` / `management/Console.jsx` / `api/vcenter.js` / `i18n/{zh,en}.js` / `styles/resplan.css` | 两个壳都挂「资源规划」tab；API；全部文案 i18n |
+
+与设计的已知差异（后续补）：内存板的 OS/虚拟化预留是主机级字段，按主机级条拖动，不做逐节点手柄；浮动 VM 的跨节点内存分布在未接入 `numastat` 采集前按节点数均分估算；§3.10 自动放置控制器（P2.5）与 `placement_event` 审计表未实现，`auto_placement` 字段只存储透传；`x-memdev-rebind` 未做，vNUMA VM 只在启动时落位；打包侧需在 `build-deb-xvirt` 为 hyper-agent 加 `xvirt-resource-plan` 入口与单元安装（见 xvirt 仓）。
