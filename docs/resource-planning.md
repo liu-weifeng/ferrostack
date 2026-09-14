@@ -799,7 +799,15 @@ vCPU 跨多个节点时按 vCPU 数加权，而不是只看「绑定节点」—
 | `xvirt_vm_llc_occupancy_bytes{vm_uuid}` | 同上 | 同上 |
 | `xvirt_node_dram_bandwidth_bytes{node,op}` | uncore IMC PMU（`cas_count_read/write`） | 裸机、uncore PMU 可用。注意开了 SNC 时一个 socket 含多个节点，IMC 不等于 per-node |
 | `xvirt_vm_cpi` / `xvirt_vm_mem_stall_ratio{vm_uuid}` | `perf stat` 按 cgroup 采 cycles / instructions / 停顿周期 | perf_event 权限 |
-| `xvirt_runq_latency_seconds{cgroup,bucket}` | ebpf_exporter 加 runqlat 程序 | 监控栈已有 ebpf_exporter（现只加载 biolatency 与 cfs-throttling） |
+| `runqlat_seconds{cgroup,bucket}` | ebpf_exporter 加 runqlat 程序 | 监控栈已有 ebpf_exporter。给的是**分布**，平均值看不见的尾巴在这里 |
+
+**先用 schedstat 拿到平均值**：`/proc/schedstat` 的 cpu 行后两个字段是 `run_delay`（累计
+等待纳秒）与 `pcount`（被调度次数），两次采样做差得 `Δrun_delay / Δpcount` = 该 CPU 每次
+被调度平均等了多久。零依赖、立刻可用，已实现为 `xvirt_cpu_runq_seconds{cpu,node}` 并
+进了节点健康合成。eBPF runqlat 补的是它给不了的那部分——尾部分布与按 cgroup 归户。
+
+前提：`kernel.sched_schedstats=1` 或开启延迟记账，否则 `run_delay` 不动；采集端检测到
+两次采样差恒为 0 时按**无数据**处理，不会当成「延迟为 0」把节点判成健康。
 
 **健康判定**。没有任何接口能直接读出「这个节点内存访问慢」，只能用几个信号合成。
 内存侧：
@@ -957,10 +965,6 @@ SPDK 部分（§3.8 结论）同步落地：plan 的 `pools.spdk.cap` 声明候�
 
 单测：`tests/test_placement.py` 15 例（分类 / 节点统计 / 档位与滞回 / 求解四场景 / 差分动作），`tests/test_resource_plan.py` 12 例。
 
-### §9.2 已知差异（后续补）
-
-内存板的 OS/虚拟化预留是主机级字段，按主机级条拖动，不做逐节点手柄；ferrovirt 侧浮动 VM 的跨节点内存分布在未接入 `numastat` 采集前按节点数均分估算（agent 控制器已用 `numa_maps` 实测）；`x-memdev-rebind` 未做，vNUMA VM 强制固定、只在启动时落位；求解器目前是贪心装箱 + 稳定性偏置，§3.10.2 的局部搜索（两两交换）未实现——VM 数在百量级时贪心解已足够接近，后续可按 Cost 增量加一轮交换；打包侧需在 `build-deb-xvirt` 为 hyper-agent 加 `xvirt-resource-plan` 入口与单元安装（见 xvirt 仓）。
-
 ### §9.3 NUMA 可观测性第一档（2026-09-14）
 
 按 §6.1 / §6.2 落地，全部零新依赖：
@@ -979,3 +983,31 @@ SPDK 部分（§3.8 结论）同步落地：plan 的 `pools.spdk.cap` 声明候�
 
 第二档（裸机频率与节流）与第三档（RDT MBM、uncore IMC、CPI、eBPF runqlat）未做，
 指标名与判据已在 §6.1 定义好，接上即可。
+
+### §9.4 第三档：RDT MBM 与运行队列延迟（2026-09-14）
+
+| 组件 | 内容 |
+|---|---|
+| 宿主机代理 `rdt.py` | resctrl 检测 / 幂等挂载 / 每虚拟机一个 **监控组**（`mon_groups/vm-<uuid>`，只占 RMID 不配 schemata）/ 组内线程对账 / 跨 L3 域求和读计数 / 速率与远端占比换算。`XVIRT_RDT=off` 可禁用。RMID 耗尽（ENOSPC）只告警一次并跳过该虚拟机；读到 `Unavailable` 按缺数据处理而不是 0 |
+| 宿主机代理 `placement.py` | `read_schedstat()` 每 CPU 运行队列延迟；`HealthSampler` 同时差分 schedstat 与 RDT；健康分新增 `runq` 分量（节点内取最差 CPU，满刻度 1ms）；`effective_remote_ratio()` 有实测用实测、否则回落驻留估计；tick 里对账 RDT 监控组（页面轮询不触发写操作） |
+| 宿主机代理 collector | `xvirt_cpu_runq_seconds{cpu,node}`、`xvirt_vm_mbm_total_bytes_per_second` / `_local_bytes_per_second`、`xvirt_vm_remote_bw_ratio`、`xvirt_vm_llc_occupancy_bytes`、`xvirt_rdt_state{state}` |
+| 监控栈（xvirt 仓） | `monitoring/ebpf_exporter/runqlat.bpf.c` + `runqlat.yaml` + `Makefile`，按 cgroup 归户的运行队列延迟直方图；`ebpf_exporter.service` 的 `--config.names` 加 `runqlat`；README 写清编译与**先单机验证再铺开**的步骤 |
+| 管理服务 | PromQL 标签白名单放行 `cgroup` |
+| Web 控制台 | 节点监控条加「排队延迟」分量与每节点平均等待；显示 RDT 可用性；虚拟机分布视图的远端访存列区分**实测**与**估计**（估计值带 `*` 并在脚注说明为什么估计会高估） |
+
+两个必须记住的口径问题：
+
+- **MBM 的 local 是 L3 域（≈ socket）粒度，不是 NUMA 节点**。开了 Sub-NUMA Clustering 时
+  一个 socket 内的多个节点彼此都算 local，远端比例会低估。单 socket 单节点的常见拓扑下
+  两者等价。
+- **驻留估计会高估跨节点代价**。冷页留在远端节点其实无害，按页数算会把它记成重度跨节点；
+  RDT 实测的是真实流量，所以有实测时一律优先。
+
+本机（Cascade Lake 虚拟机）没有 resctrl 也没有 uncore PMU，RDT 路径只验证了「无硬件时
+安全降级」；schedstat 路径实测可用（cpu0 24.6µs / cpu1 42.4µs）。`runqlat.bpf.c` **尚未
+编译验证**，README 已写明首次部署要先单机跑通。单测增至 33 例，新增 8 例覆盖实测优先、
+估计回落、runq 归一与缺数据不污染、RDT 的比例与带宽换算、无硬件降级。
+
+### §9.2 已知差异（后续补）
+
+内存板的 OS/虚拟化预留是主机级字段，按主机级条拖动，不做逐节点手柄；ferrovirt 侧浮动 VM 的跨节点内存分布在未接入 `numastat` 采集前按节点数均分估算（agent 控制器已用 `numa_maps` 实测）；`x-memdev-rebind` 未做，vNUMA VM 强制固定、只在启动时落位；求解器目前是贪心装箱 + 稳定性偏置，§3.10.2 的局部搜索（两两交换）未实现——VM 数在百量级时贪心解已足够接近，后续可按 Cost 增量加一轮交换；打包侧需在 `build-deb-xvirt` 为 hyper-agent 加 `xvirt-resource-plan` 入口与单元安装（见 xvirt 仓）。
