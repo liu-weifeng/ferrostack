@@ -312,6 +312,30 @@ memory.max@machine.slice = MemTotal − OS 预留 − 虚拟化服务预留 − 
   reactor mask = 池核；被服务 VM 走模式 C；reactor 是 100% 轮询，利用率图对 spdk 池
   改显示「占用/预留」而非 busy%（接 SPDK 自身 stats 后再显示有效利用率）。
 
+**SPDK 隔离方式的结论（cgroup 分区，而非 isolcpus）**：
+
+- **SPDK 不需要"绝对隔离"**。reactor 是用户态轮询线程，真正怕的是三件事：别的任务
+  抢核、IRQ 打断、HT 兄弟核干扰。isolated 分区（脱离调度域、独占）+ 整核成对划入 +
+  IRQ 驱离已覆盖这三件。残余只有周期 tick 与 per-CPU 内核线程：每核每秒数百次、每次
+  约 1–2 µs，占用 < 0.2%、抖动微秒级，对几十微秒量级的 IO 路径没有实际影响。
+- **isolcpus 做不到在线增减**：它是启动参数，改一次重启一次，且内核文档已标为
+  Deprecated、建议改用 cpuset；在"调度域隔离"这一层 isolated 分区与
+  `isolcpus=domain` 是同一件事，差别只剩 `nohz_full` / `rcu_nocbs` / `managed_irq`
+  这些只能启动时设的项——归入可选的「低抖动启动档」，并且只声明 **SPDK 候选核上限**
+  （如最多 8 核），之后实际给多少核仍由 cgroup 在上限内动态决定；候选核暂时跑 VM 时
+  多付少量 context-tracking 开销，故上限不宜划大。
+- **在线给 SPDK 加核（cgroup 层可行）**，固定顺序：从 `machine.slice` 的 cpuset 拿掉这对
+  HT（VM 线程自动迁走）→ 写进 `spdk.slice` 的 cpuset（分区保持 isolated）→ 回读
+  `cpuset.cpus.partition` 确认不是 `isolated invalid` → 改写现存 IRQ 亲和性 + irqbalance
+  禁用列表 + workqueue cpumask。managed IRQ 只在本核发起 IO 时才触发，核上只有 SPDK 时
+  不会响；SPDK 自己接管的 NVMe 走 vfio，没有内核 IRQ。
+- **真正的限制在 SPDK 进程层**：reactor 核集由启动时的 core mask 固定，运行中不能新增
+  reactor。两种做法：① 推荐——SPDK 启动时 reactor mask 覆盖候选核上限，开 dynamic
+  调度器让线程只落在需要的 reactor 上，cgroup 只把当前实际需要的核给 `spdk.slice`，
+  "加核" = cgroup 加核 + 调度器放开对应 reactor（需验证所用版本下空闲 reactor 是否真正
+  停止轮询，否则被内核挪到允许核上空转）；② 兜底——改 core mask 重启 vhost target，
+  依赖 inflight-shmfd 重连 + QEMU chardev `reconnect`，客户机不重启、仅短暂 IO 停顿。
+
 **IRQ 与内核线程的诚实口径**：
 
 - SPDK/独占池核通过 irqbalance banned + 显式 affinity 驱离可迁移 IRQ；per-CPU
@@ -340,56 +364,100 @@ resource-plan.service (oneshot, DefaultDependencies=no, After=local-fs.target,
 
 ### 3.10 动态自动绑定与在线调整（放置控制器）
 
-目标：**资源充足时 VM 一启动就自动拿到「独占绑核 + 绑 NUMA」；VM 变多时自动降级、
-再平衡；VM 减少时自动升回去。** 用户显式设置的放置永远不被自动改动。
+目标：**用户在界面手动指定了 CPU 绑定 / NUMA / 内存预留的 VM 是「固定」的，永远不被
+自动改动；其余全部 VM 由控制器按主机当前负载在线求最优绑定——负载低时每台都拿到
+独占绑核 + 绑节点，VM 变多时在线降级、跨节点再平衡，VM 减少时再升回去。** 所有
+调整都在线完成（vCPU 即时、内存后台迁页，§3.10.4），不重启 VM。
 
-#### 3.10.1 放置等级与来源
+#### 3.10.1 两类 VM：固定与自动
+
+| 类别 | 谁决定 | 内容 | 控制器怎么对待 |
+|---|---|---|---|
+| **固定**（`placement_source=manual`） | 用户在 VM 视图显式设置，或点「锁定」 | CPU：独占核集合 / 绑定节点 / 浮动；内存：绑定节点或 vNUMA、`mem_reserved_mb`（scope `memory.min`）；后端模式 | **不可移动的约束**：它占的独占核、绑定节点上的内存与预留先从可用资源中扣除，求解只在剩余资源上进行 |
+| **自动**（`placement_source=auto`，默认） | 控制器 | 同上三个维度，由求解器在线赋值 | 每拍重新求最优，变更走在线原语 |
+
+强制固定（不给自动）的三类：显式 vNUMA（缺 per-memdev 迁移原语）、vfio 直通（页被
+pin 不可迁）、1G 大页后端（迁移慢且依赖目标节点空闲 1G 页）。用户改动自动 VM 的任一
+放置字段并保存 = 转为固定；「交回自动」则下一拍重新求解。固定 VM 的内存预留
+`memory.min` 同时进入 §3.4 的预算恒等式，UI 在内存条上以实色标出。
+
+自动 VM 的可能形态就是三个等级：
 
 | 等级 | 含义 | 对应字段（§4.1） |
 |---|---|---|
 | **A · 独占** | vCPU 1:1 绑物理线程 + 内存绑同一节点 | `cpu_placement=dedicated, numa_mode=node` |
-| **B · 节点共享** | 不绑核，但限定在一个节点的共享池内 + 内存绑该节点 | `cpu_placement=shared, numa_mode=node` |
+| **B · 节点共享** | 不绑核，但限定在一个节点的共享池内 + 内存绑该节点，`cpu.weight` 按优先级 | `cpu_placement=shared, numa_mode=node` |
 | **C · 浮动** | 不绑核不绑 NUMA（§3.6 默认态） | `cpu_placement=shared, numa_mode=none` |
 
-`placement_source ∈ {auto, manual}`：**auto** 由控制器在 A/B/C 间升降；**manual** 是用户
-在 VM 视图显式设置或点了「锁定」的，控制器只读不写。显式 vNUMA、带 vfio 直通设备、
-1G 大页后端的 VM 强制 manual（原因见 3.10.5）。
+#### 3.10.2 「最优」的定义：目标函数 + 负载档位
 
-#### 3.10.2 启动时准入（auto VM）
+**目标函数**（对自动 VM 集合求放置 P）：
 
-对每个节点 n 计算：`free_ded_cores(n)`（共享池内未被任何独占绑定的物理核）、
-`free_mem(n)`（VM 池预算 − 已用）、`oc(n)`（节点共享池超分比 = Σ落在该节点的 B/C 级
-vCPU ÷ 扣除独占后的共享线程数；B 级 vCPU 全算到其绑定节点，**C 级（浮动）VM 的 vCPU
-按各节点共享线程数占比分摊**到每个节点，避免浮动 VM 在 oc 里被漏算或重复算）。
-按顺序取第一个满足的等级：
+```
+Cost(P) = Σ_vm [ w_remote · remote_mem_ratio(vm)          // 跨节点访存比例（numastat 实测 / 目标为 0）
+              + w_cont   · contention(vm) ]                 // 所在共享域的超分比 oc（独占 = 0）
+        + w_bal · |load(N0) − load(N1)|                     // 节点间 vCPU 与内存用量不均衡
+        + w_move · Σ_{vm 变更} move_cost(vm)                // 常驻内存 / 迁页带宽 + 冷却惩罚（滞回来源）
+约束：固定 VM 不动；每节点 Σ内存 ≤ VM 池预算；独占核两两不交且 HT 成对；
+      绑定后节点剩余共享线程 ≥ min_shared_threads；池边界 = plan 的共享池
+```
 
-1. **A**：存在节点使 `free_ded_cores ≥ ⌈vcpus / threads_per_core⌉`（`threads_per_core`
-   读自拓扑扫描，关 HT 的主机为 1）且 `free_mem ≥ mem×1.1` 且绑定后该
-   节点剩余共享线程 ≥ `min_shared_threads`（默认 4 且 ≥ 节点共享线程的 25%）且
-   `oc(n) ≤ dedicate_max_oc`（默认 1.0）。多个节点满足时取 `oc` 最低者。
-2. **B**：存在节点使 `free_mem ≥ mem×1.1` 且加入后 `oc(n) ≤ bind_max_oc`（默认 2.0）。
-   取内存用量比最低的节点。
-3. **C**：其余情况浮动启动。
+`move_cost` 是避免抖动的核心：一个变更只有在「预计收益 ≥ 搬动成本 + 冷却惩罚」时才
+执行，因此负载短暂波动不会引发来回搬。权重有默认值，不在 UI 暴露；UI 暴露的是下面
+的档位阈值。
 
-准入在虚拟机监控服务 `launch_vm` 前由宿主机代理决定（同一台主机上串行，避免两台 VM 同时
-抢同一批核），结果随启动参数一起下发；启动后 `placement_tier` 落库并推 WS。
+**负载档位**让「最优」可预测、可解释。主机负载指数
+`L = max( 共享池 oc / bind_max_oc, VM 池内存用量比, PSI 归一化 )`，分三档，
+进入 / 退出阈值不同（滞回）+ 稳定期：
 
-#### 3.10.3 运行中的再平衡
-
-触发：VM 启停 / 迁入迁出 / plan 应用完成 / 每 30s 一拍。每拍最多做**一件**事，
-按优先级：
-
-| 动作 | 条件（含滞回） | 选谁 |
+| 档位 | 判定 | 自动 VM 的目标形态 |
 |---|---|---|
-| **降级 A→B**（解绑核） | 主机共享池 `oc ≥ release_oc`（默认 1.5）持续 2 拍，或节点 CPU 压力 > `psi_cpu_high`（`cpu.pressure` 不分 NUMA 节点：取该节点上所有 VM scope 的 `cpu.pressure some avg60` 按 vCPU 数加权聚合，或用 per-cpu `/proc/stat` 折算该节点共享线程的 busy%） | auto 的 A 级 VM 中：优先级低 → CPU 利用率低 → 占核多，依次释放直到 `oc < dedicate_max_oc` |
-| **升级 B→A**（绑核） | `oc ≤ dedicate_max_oc` 持续 `promote_stable_s`（默认 300s）且有足够空闲核 | auto 的 B 级 VM 中：优先级高 → CPU 利用率高 优先 |
-| **NUMA 再平衡**（换节点） | 两节点 VM 池用量比之差 > `numa_imbalance_pct`（默认 25）或 CPU busy 差 > 30% 持续 2 拍 | 热节点上 auto 的 B/C 级 VM，按常驻内存**从小到大**挑第一台目标节点放得下的（搬得便宜） |
-| **收编 C→B**（浮动转绑定） | 浮动 VM 的实测内存 ≥ 80% 已落在某节点且该节点有容量 | 该 VM（几乎不需要迁页，只写 cpuset） |
+| **宽裕** | 所有自动 VM 都能独占放下：Σ⌈vcpus/threads_per_core⌉ ≤ 空闲独占核，且每节点内存放得下 | **全部 A**：按节点装箱（vCPU 降序 first-fit，内存随 vCPU 同节点），两节点均衡 |
+| **适中** | 能全部绑节点、不能全部独占 | **A/B 混合**：优先级高、CPU 利用率高的保留 / 升为 A；其余 B（`cpu.weight` 按优先级）；节点间按内存 + vCPU 均衡 |
+| **紧张** | 内存或 vCPU 超分（`oc ≥ release_oc` 或内存用量 ≥ 预算） | **B/C**：独占核全部释放回共享池；vCPU 超分在两节点均衡；某节点内存放不下的 VM 允许 C（浮动、跨节点）；内存分层 VM 优先降级（它们对远端访存最不敏感） |
 
-守卫：每 VM 冷却 `cooldown_s`（默认 600）；主机同一时刻最多 1 个内存迁移；VM 启动
-后 120s 内不动（让 first-touch 稳定）；plan 应用中、主机参与在线迁移中、内存分层
-处于下刷档时全部暂停；`mode=advise` 只记录建议不执行（页面显示「建议」，供上线
-初期观察）。所有决策写 `placement_event`（§4.1）可审计。
+档位只决定「目标形态」，具体哪台 VM 落哪个节点、谁保留独占，仍由目标函数决定。
+
+#### 3.10.3 求解与执行（每拍）
+
+触发：VM 启停 / 迁入迁出 / plan 应用完成 / 每 30s 一拍。
+
+```
+① 采样   拓扑 + plan；每 VM：vCPU 利用率（scope cpu.stat）、常驻内存与节点分布
+         （numa_maps）、优先级；每节点：oc、空闲独占核、空闲内存、PSI
+② 定档   计算 L，按滞回决定档位（进入更高档立即，退出需稳定 promote_stable_s）
+③ 求解   以当前放置为初解，目标形态为模板：贪心装箱（固定 VM 先占位 → 自动 VM 按
+         优先级、vCPU 降序 first-fit 到 Cost 增量最小的节点/等级）→ 局部搜索（两两交换、
+         单台迁移）直到 Cost 不再下降。VM 数在百量级，毫秒级完成
+④ 差分   目标 vs 当前 → 动作列表，按成本排序：解绑核（免费）→ 绑核（免费）→
+         改 cpu.weight（免费）→ 收编 C→B（几乎免费，只写 cpuset）→ 换节点（有成本）
+⑤ 执行   免费动作本拍全部执行；换节点每拍最多 1 台、主机同一时刻最多 1 个内存迁移；
+         每台 VM 冷却 cooldown_s；VM 启动后 settle_after_boot_s 内不动
+⑥ 记录   placement_event（动作、from/to、触发指标快照、收益估计）+ WS 推送
+```
+
+**启动时准入**是同一求解器的增量调用：新 VM 按当前档位的目标形态入场（宽裕 → A，
+适中 → 按优先级 A 或 B，紧张 → B 或 C），**不为它挤动别人**；下一拍再做全局优化。
+准入在虚拟机监控服务 `launch_vm` 前由宿主机代理决定（同一台主机上串行，避免两台
+VM 同时抢同一批核），结果随启动参数一起下发；启动后 `placement_tier` 落库并推 WS。
+
+**oc 的口径**：节点共享池超分比 = Σ落在该节点的 B/C 级 vCPU ÷ 扣除独占后的共享线程
+数；B 级 vCPU 全算到其绑定节点，**C 级（浮动）VM 的 vCPU 按各节点共享线程数占比
+分摊**到每个节点，避免浮动 VM 在 oc 里被漏算或重复算。节点 CPU 压力：`cpu.pressure`
+不分 NUMA 节点，取该节点上所有 VM scope 的 `cpu.pressure some avg60` 按 vCPU 数加权
+聚合，或用 per-cpu `/proc/stat` 折算该节点共享线程的 busy%。
+
+**守卫**：plan 应用中、主机参与在线迁移中、内存分层处于下刷档时全部暂停；
+`mode=advise` 只记录建议不执行（页面显示「建议」，供上线初期观察）；
+`dedicate_max_oc < release_oc` 且 `promote_stable_s > 0` 是硬校验，保证 A/B 不会
+反复升降。所有决策写 `placement_event`（§4.1）可审计。
+
+**一个例子**（2 节点 × 8 核 16 线程，共享池每节点 6 核）：早上只有 3 台自动 VM
+（4/4/8 vCPU）→ 宽裕档，全部 A，N0 放 4+4、N1 放 8。中午再启 6 台 → 求解发现独占核
+不够 → 适中档：优先级 high 的 8 vCPU 保留 A，其余转 B，两节点各 4 到 5 台；转换只是
+解绑 + 改 cpuset，秒级完成。傍晚内存用量顶到预算 → 紧张档：剩余 A 释放，两台内存分层
+VM 转 C 允许跨节点；一台 12G 的 B 级 VM 因 N0 内存吃紧被搬到 N1（先切 vCPU，内存
+后台迁页约 10s）。晚上 VM 陆续关机 → 稳定 5 分钟后逐拍升回 A，每拍最多一次换节点。
 
 #### 3.10.4 在线调整的方法（确定项）
 
