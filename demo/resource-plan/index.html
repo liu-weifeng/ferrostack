@@ -203,6 +203,36 @@
   .vm-row .cs { display:flex; gap:4px; flex-wrap:wrap; margin-left:auto; justify-content:flex-end; }
   .mini { font-size:10.5px; border:1px solid var(--line); border-radius:4px; padding:0 5px; color:var(--muted);
           white-space:nowrap; }
+  .tier { display:inline-block; min-width:16px; text-align:center; font-family:"JetBrains Mono",monospace; font-size:10.5px;
+          font-weight:700; border-radius:4px; padding:0 4px; color:#fff; }
+  .tier.A { background:var(--p-ded); } .tier.B { background:var(--p-vm); } .tier.C { background:var(--kern); }
+  .tier.V { background:var(--hp1g); }
+  .lock { font-size:10.5px; color:var(--muted); }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:3px 12px; font-size:12px; color:var(--muted); margin:8px 0; }
+  .kv b { color:var(--ink); font-variant-numeric:tabular-nums; font-weight:600; }
+  .nodestat { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:8px 0; }
+  .nodestat > div { border:1px solid var(--line); border-radius:8px; padding:6px 10px; font-size:11.5px; color:var(--muted); }
+  .nodestat b { color:var(--ink); font-variant-numeric:tabular-nums; }
+  .prog { height:8px; border-radius:4px; background:var(--surface2); overflow:hidden; margin:4px 0; }
+  .prog i { display:block; height:100%; background:var(--accent); }
+  .ev { display:grid; grid-template-columns:38px 1fr; gap:8px; padding:5px 0; border-top:1px dashed var(--line); font-size:11.5px; }
+  .ev .t { font-family:"JetBrains Mono",monospace; color:var(--muted); }
+  .ev .why { color:var(--muted); }
+  .thr-in { width:56px; font:inherit; font-size:12px; border:1px solid var(--line2); border-radius:5px; padding:1px 5px;
+            background:var(--surface); color:var(--ink); }
+  .thr-in:disabled { opacity:.6; }
+  .tierbox { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; align-items:center; border:1.5px solid; border-radius:8px;
+             padding:8px 12px; margin:8px 0; font-size:12px; }
+  .act { display:flex; gap:8px; align-items:baseline; font-size:12px; padding:4px 0; border-top:1px dashed var(--line); }
+  .act .why { color:var(--muted); }
+  .nsbar { display:flex; gap:2px; height:12px; border-radius:4px; overflow:hidden; background:var(--surface2); margin:6px 0; max-width:360px; }
+  .nsbar i { display:block; height:100%; }
+  .steps { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; font-size:11.5px; }
+  .steps span { border:1px solid var(--line2); border-radius:999px; padding:1px 9px; color:var(--muted); }
+  .steps span.done { border-color:var(--ok); color:var(--ok); }
+  .steps span.cur { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
+  .auto-banner { display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:12.5px; padding:8px 12px;
+                 border:1px dashed var(--line2); border-radius:8px; margin:0 0 14px; background:var(--surface); }
   .chg { display:flex; gap:8px; align-items:baseline; padding:6px 2px; border-bottom:1px dashed var(--line);
          font-size:12.5px; }
   .chg .undo { margin-left:auto; border:0; background:none; color:var(--muted); font-size:12px; }
@@ -270,36 +300,60 @@ const coreNode = c => c < 8 ? 0 : 1;
 const nodeCores = n => n===0 ? [0,1,2,3,4,5,6,7] : [8,9,10,11,12,13,14,15];
 
 const VMS = {
-  "web-01":     { vcpus:4, memGB:8,  state:"running", 分布式存储:false },
-  "db-core-01": { vcpus:8, memGB:16, state:"running", 分布式存储:false },
+  "web-01":     { vcpus:4, memGB:8,  state:"running", sharedDisk:false, nsplit:{0:8,1:0} },
+  "db-core-01": { vcpus:8, memGB:16, state:"running", sharedDisk:false, nsplit:{0:8,1:8} },
   /* nsplit = 浮动 VM 的实测跨节点内存分布（numastat 口径，模拟），浮动 VM 不绑 NUMA 时内核 first-touch 决定 */
-  "oa-file-01": { vcpus:4, memGB:8,  state:"running", 分布式存储:true,  nsplit:{0:3.1,1:4.9} },
-  "ai-train-02":{ vcpus:8, memGB:4,  state:"running", 分布式存储:false, mt:{res:0.8,swp:3.2} },
-  "batch-02":   { vcpus:4, memGB:8,  state:"running", 分布式存储:false, mt:{res:4.4,swp:3.6}, nsplit:{0:2.6,1:1.8} },
-  "dev-stop-01":{ vcpus:2, memGB:4,  state:"shutoff", 分布式存储:false },
-  "test-fl-03": { vcpus:6, memGB:12, state:"running", 分布式存储:false, nsplit:{0:7.4,1:4.6} },
+  "oa-file-01": { vcpus:4, memGB:8,  state:"running", sharedDisk:true,  nsplit:{0:3.1,1:4.9} },
+  "ai-train-02":{ vcpus:8, memGB:4,  state:"running", sharedDisk:false, mt:{res:0.8,swp:3.2}, nsplit:{0:0.8,1:0} },
+  "batch-02":   { vcpus:4, memGB:8,  state:"running", sharedDisk:false, mt:{res:4.4,swp:3.6}, nsplit:{0:2.6,1:1.8} },
+  "dev-stop-01":{ vcpus:2, memGB:4,  state:"shutoff", sharedDisk:false },
+  "test-fl-03": { vcpus:6, memGB:12, state:"running", sharedDisk:false, nsplit:{0:7.4,1:4.6} },
+  /* 负载模拟「高」时才启动的三台 */
+  "sim-web-04": { vcpus:4, memGB:8,  state:"shutoff", sharedDisk:false },
+  "sim-db-05":  { vcpus:8, memGB:24, state:"shutoff", sharedDisk:false },
+  "sim-ai-06":  { vcpus:8, memGB:16, state:"shutoff", sharedDisk:false, mt:{res:6,swp:10} },
+};
+/* 负载模拟三档：哪些 VM 在跑 + 主机 PSI */
+const LOADS = {
+  low:  { psi:0.12, running:["web-01","oa-file-01","batch-02","db-core-01"] },
+  mid:  { psi:0.32, running:["web-01","oa-file-01","batch-02","db-core-01","ai-train-02"] },
+  high: { psi:0.71, running:["web-01","oa-file-01","batch-02","db-core-01","ai-train-02","test-fl-03","sim-web-04","sim-db-05","sim-ai-06"] },
 };
 const basePlan = {
   corePool: {0:"system",8:"system",1:"virt",9:"virt",2:"spdk",
              3:"vm",4:"vm",5:"vm",6:"vm",7:"vm",10:"vm",11:"vm",12:"vm",13:"vm",14:"vm",15:"vm"},
   mem: { 0:{os:4,virt:8,hp2m:16,hp1g:16}, 1:{os:4,virt:4,hp2m:16,hp1g:16} },
-  wm: { evict:10, back:50 }, spdkBoot:false,
+  wm: { evict:10, back:50 }, spdkBoot:false, spdkCap:4,
+  /* §3.10 自动放置控制器配置（随 plan 持久化） */
+  auto: { enabled:true, mode:"apply", dedicateMaxOc:1.0, releaseOc:1.5, bindMaxOc:2.0, numaImbalancePct:25 },
+  /* source: auto = 控制器可升降 A/B/C；manual = 用户显式设置/锁定（vNUMA、1G 大页、vfio 强制 manual） */
   place: {
-    "web-01":     { mode:"dedicated", pins:{0:5,1:21,2:6,3:22}, numa:"auto", node:0, backend:"anon", tiering:false, prio:"normal" },
-    "db-core-01": { mode:"shared", pins:{}, numa:"manual", node:0, backend:"hp1g", tiering:false, prio:"high",
+    "web-01":     { mode:"dedicated", pins:{0:5,1:21,2:6,3:22}, numa:"auto", node:0, backend:"anon", tiering:false, prio:"normal", source:"auto" },
+    "db-core-01": { mode:"shared", pins:{}, numa:"manual", node:0, backend:"hp1g", tiering:false, prio:"high", source:"manual",
                     vnodes:[{vcpus:4,memGB:8,host:0},{vcpus:4,memGB:8,host:1}] },
     /* 浮动 VM：mode=shared + numa=none —— 不绑核、不绑 NUMA，跑在未预留的共享池上 */
-    "oa-file-01": { mode:"shared", pins:{}, numa:"none", node:0, backend:"memfd", tiering:false, prio:"normal" },
-    "ai-train-02":{ mode:"shared", pins:{}, numa:"auto", node:0, backend:"anon", tiering:true, prio:"low" },
-    "batch-02":   { mode:"shared", pins:{}, numa:"none", node:0, backend:"anon", tiering:true, prio:"normal" },
-    "dev-stop-01":{ mode:"shared", pins:{}, numa:"none", node:0, backend:"anon", tiering:false, prio:"normal" },
-    "test-fl-03": { mode:"shared", pins:{}, numa:"none", node:0, backend:"anon", tiering:false, prio:"normal" },
+    "oa-file-01": { mode:"shared", pins:{}, numa:"none", node:0, backend:"memfd", tiering:false, prio:"normal", source:"auto" },
+    "ai-train-02":{ mode:"shared", pins:{}, numa:"auto", node:0, backend:"anon", tiering:true, prio:"low", source:"auto" },
+    /* 固定 VM（用户手动指定）：reserveGB = memory.min 内存预留 */
+    "batch-02":   { mode:"shared", pins:{}, numa:"none", node:0, backend:"anon", tiering:true, prio:"normal", source:"manual", reserveGB:6 },
+    "dev-stop-01":{ mode:"shared", pins:{}, numa:"none", node:0, backend:"anon", tiering:false, prio:"normal", source:"auto" },
+    "test-fl-03": { mode:"shared", pins:{}, numa:"none", node:0, backend:"anon", tiering:false, prio:"normal", source:"auto" },
+    "sim-web-04": { mode:"shared", pins:{}, numa:"none", node:0, backend:"anon", tiering:false, prio:"normal", source:"auto" },
+    "sim-db-05":  { mode:"shared", pins:{}, numa:"none", node:0, backend:"anon", tiering:false, prio:"high",   source:"auto" },
+    "sim-ai-06":  { mode:"shared", pins:{}, numa:"none", node:0, backend:"anon", tiering:true,  prio:"low",    source:"auto" },
   },
 };
+/* 控制器最近决策（placement_event 审计，模拟） */
+const EVENTS = [
+  { t:"09:12", vm:"web-01",     act:"升级",   from:"B",  to:"A",  why:"宽裕档：oc 0.8 ≤ 1.0 稳定 300s，N0 空闲独占核 2", st:"已应用" },
+  { t:"08:55", vm:"ai-train-02",act:"降级",   from:"A",  to:"B",  why:"适中档：独占核不足，优先级 low 先释放", st:"已应用" },
+  { t:"08:30", vm:"oa-file-01", act:"准入",   from:"—",  to:"C",  why:"启动准入：无节点满足 B（free_mem 不足）", st:"已应用" },
+];
+const MIN_SHARED_CORES = 2;   // 每节点绑定后至少保留的共享物理核
 const clone = o => JSON.parse(JSON.stringify(o));
 
 const S = { route:"host", edit:false, applied:clone(basePlan), draft:null, sel:new Set(),
-            vmDraft:null, showSvc:false, issues:null, pendBoot:[], util:{} };
+            vmDraft:null, showSvc:false, issues:null, pendBoot:[], util:{}, load:"mid", migs:[] };
 const P = () => S.edit ? S.draft : S.applied;
 
 /* util 模拟 */
@@ -332,6 +386,8 @@ setInterval(()=>{ if(document.hidden||S.route!=="host") return;
 const isFloating = pl => pl.mode==="shared" && pl.numa==="none";
 /* VM 内存落在某 NUMA 节点的比例：vNUMA 按声明；绑定单节点 = 1/0；浮动 = 实测 numastat 分布（无数据按均分估） */
 function nodeShare(id,pl,node){ const vm=VMS[id];
+  const mg=S.migs.find(m=>m.vm===id);                 // 迁移中：按迁页进度在原分布与目标之间插值
+  if(mg){ const tgt=node===mg.to?1:0; return mg.orig[node]+(tgt-mg.orig[node])*mg.pct/100; }
   if(pl.numa==="manual"&&pl.vnodes) return pl.vnodes.filter(v=>v.host===node).reduce((s,v)=>s+v.memGB,0)/vm.memGB;
   if(pl.numa==="auto") return pl.node===node?1:0;
   const res = vm.mt ? vm.mt.res : vm.memGB;            // nsplit 是常驻内存的分布
@@ -357,6 +413,125 @@ function floatingStats(plan){
   const threads=Object.keys(plan.corePool).filter(c=>plan.corePool[c]==="vm"&&!ded[c]).length*2;
   const maxV=vms.reduce((m,id)=>Math.max(m,VMS[id].vcpus),0);
   return { vms, vcpus, threads, maxV, ratio: threads?Math.round(vcpus/threads*10)/10:Infinity }; }
+/* 放置等级：A 独占 / B 节点共享 / C 浮动 / V 显式 vNUMA（只能手动） */
+function tierOf(pl){ if(pl.numa==="manual") return "V"; if(pl.mode==="dedicated") return "A"; return pl.numa==="auto"?"B":"C"; }
+function forcedManual(pl){ return pl.numa==="manual"||pl.backend==="hp1g"; }
+/* 控制器视角的节点统计：共享池可用线程、oc（B 级 + 浮动按线程比例分摊）、空闲独占核、空闲内存 */
+function autoStats(plan){
+  const ded=dedCores(plan), out={};
+  const thr=n=>nodeCores(n).filter(c=>plan.corePool[c]==="vm"&&!ded[c]).length*2;
+  const tot=thr(0)+thr(1);
+  const flVcpu=Object.entries(plan.place).filter(([id,pl])=>isFloating(pl)&&VMS[id].state==="running").reduce((s,[id])=>s+VMS[id].vcpus,0);
+  for(const n of [0,1]){
+    const t=thr(n);
+    const bV=Object.entries(plan.place).filter(([id,pl])=>pl.mode==="shared"&&pl.numa==="auto"&&pl.node===n&&VMS[id].state==="running").reduce((s,[id])=>s+VMS[id].vcpus,0);
+    const fl=tot?flVcpu*t/tot:0;
+    out[n]={ threads:t, oc:t?Math.round((bV+fl)/t*100)/100:Infinity,
+             freeDed:nodeCores(n).filter(c=>plan.corePool[c]==="vm"&&!ded[c]).length,
+             freeMem:Math.max(0,Math.round((vmPoolBudget(n)-vmPoolUsed(n))*10)/10) };
+  }
+  return out;
+}
+/* ── §3.10.2/3 负载档位 + 求解器 + 差分 ── */
+const PRIO_W={high:0,normal:1,low:2};
+function loadIndex(plan){
+  const a=plan.auto, ded=dedCores(plan);
+  const runAuto=Object.entries(plan.place).filter(([id,pl])=>pl.source==="auto"&&VMS[id].state==="running");
+  const sharedCores=Object.keys(plan.corePool).filter(c=>plan.corePool[c]==="vm").length;
+  const fixedPinned=Object.entries(ded).filter(([,vm])=>plan.place[vm].source==="manual").length;
+  const availDed=sharedCores-fixedPinned-MIN_SHARED_CORES*2;
+  const needDed=runAuto.reduce((s,[id])=>s+Math.ceil(VMS[id].vcpus/2),0);
+  const sharedThr=(sharedCores-Object.keys(ded).length)*2;
+  const bcV=Object.entries(plan.place).filter(([id,pl])=>pl.mode==="shared"&&VMS[id].state==="running").reduce((s,[id])=>s+VMS[id].vcpus,0);
+  const oc=sharedThr?Math.round(bcV/sharedThr*100)/100:Infinity;
+  const memRatio=Math.round((vmPoolUsed(0)+vmPoolUsed(1))/(vmPoolBudget(0)+vmPoolBudget(1))*100)/100;
+  const psi=LOADS[S.load].psi;
+  const L=Math.round(Math.max(oc/a.bindMaxOc, memRatio, psi)*100)/100;
+  const tier = (oc>=a.releaseOc||memRatio>=0.95) ? "紧张" : (needDed<=availDed&&oc<=a.dedicateMaxOc&&memRatio<0.8) ? "宽裕" : "适中";
+  return { L, tier, oc, memRatio, psi, needDed, availDed };
+}
+const TIER_FORM={ "宽裕":"全部 A（独占绑核 + 绑节点），按节点装箱", "适中":"A/B 混合：优先级高、CPU 忙的保留独占，其余绑节点共享", "紧张":"释放全部独占，B/C 均衡超分；内存放不下的允许浮动跨节点" };
+/* 求目标放置：固定 VM 先占位 → 自动 VM 按优先级、vCPU 降序装箱；以当前放置为初解（能不动就不动） */
+function solveTarget(plan){
+  const li=loadIndex(plan), a=plan.auto, target={};
+  const freeCores={0:[],1:[]}, memUsed={0:0,1:0}, ded=dedCores(plan);
+  for(const n of [0,1]) freeCores[n]=nodeCores(n).filter(c=>plan.corePool[c]==="vm"&&(!ded[c]||plan.place[ded[c]].source==="auto"));
+  const resOf=id=>VMS[id].mt?VMS[id].mt.res:VMS[id].memGB;
+  for(const [id,pl] of Object.entries(plan.place)){ if(VMS[id].state!=="running") continue;
+    if(pl.source==="manual"){ for(const n of [0,1]) memUsed[n]+=resOf(id)*nodeShare(id,pl,n)+(pl.reserveGB||0)*(pl.numa==="auto"?(pl.node===n?1:0):0.5); } }
+  const fits=(id,n,extra)=>memUsed[n]+resOf(id)*1.1+(extra||0)<=vmPoolBudget(n);
+  const vms=Object.entries(plan.place).filter(([id,pl])=>pl.source==="auto"&&VMS[id].state==="running")
+    .sort((x,y)=>PRIO_W[x[1].prio]-PRIO_W[y[1].prio]||VMS[y[0]].vcpus-VMS[x[0]].vcpus);
+  const curNode=pl=>pl.numa==="auto"||pl.mode==="dedicated"?pl.node:null;
+  for(const [id,pl] of vms){ const vm=VMS[id], need=Math.ceil(vm.vcpus/2);
+    const wantA = li.tier==="宽裕" || (li.tier==="适中" && (pl.prio==="high"||pl.mode==="dedicated"));
+    let placed=null;
+    if(wantA){ const order=[curNode(pl),0,1].filter((n,i,arr)=>n!==null&&arr.indexOf(n)===i);
+      for(const n of order){ if(freeCores[n].length-need>=MIN_SHARED_CORES&&fits(id,n)){
+        const keep=Object.values(pl.pins).map(t=>t<16?t:t-16).filter((c,i,arr)=>arr.indexOf(c)===i&&freeCores[n].includes(c));
+        const cores=[...keep,...freeCores[n].filter(c=>!keep.includes(c))].slice(0,need);
+        freeCores[n]=freeCores[n].filter(c=>!cores.includes(c)); memUsed[n]+=resOf(id);
+        const pins={}; let v=0; for(const c of cores) for(const t of coreThreads(c)) if(v<vm.vcpus) pins[v++]=t;
+        placed={mode:"dedicated",numa:"auto",node:n,pins}; break; } } }
+    if(!placed){ const cn=curNode(pl);
+      const imb=Math.abs(memUsed[0]/vmPoolBudget(0)-memUsed[1]/vmPoolBudget(1))*100;
+      let n = cn!==null&&fits(id,cn)&&imb<=a.numaImbalancePct ? cn : [0,1].sort((x,y)=>memUsed[x]/vmPoolBudget(x)-memUsed[y]/vmPoolBudget(y))[0];
+      if(fits(id,n)){ memUsed[n]+=resOf(id); placed={mode:"shared",numa:"auto",node:n,pins:{}}; }
+      else { for(const k of [0,1]) memUsed[k]+=resOf(id)*0.5; placed={mode:"shared",numa:"none",node:0,pins:{}}; } }
+    target[id]=placed; }
+  return {target,li};
+}
+function diffActions(plan){
+  const {target,li}=solveTarget(plan), acts=[];
+  for(const [id,t] of Object.entries(target)){ const c=plan.place[id], ct=tierOf(c), tt=tierOf(t);
+    const cn=(c.numa==="auto"||c.mode==="dedicated")?c.node:null, tn=t.numa==="auto"?t.node:null;
+    const moved=cn!==null&&tn!==null&&cn!==tn;
+    if(ct===tt&&!moved&&JSON.stringify(c.pins)===JSON.stringify(t.pins)) continue;
+    const kind = moved?"move" : ct==="A"&&tt!=="A"?"unpin" : tt==="A"?"pin" : ct==="C"&&tt==="B"?"bind" : "unbind";
+    acts.push({ id, t, kind, cost:kind==="move"?"move":"free", from:ct+(cn!==null?"·N"+cn:""), to:tt+(tn!==null?"·N"+tn:""),
+      label:{move:"换节点（vCPU 即时 + 内存迁页）",unpin:"解绑独占核",pin:"绑定独占核",bind:"收编：绑定节点（只写 cpuset）",unbind:"放开为浮动"}[kind] }); }
+  acts.sort((x,y)=>(x.cost==="move")-(y.cost==="move"));
+  return {acts,li,target};
+}
+/* 在线换节点：vCPU 立即切换，内存后台迁页（模拟） */
+function startMig(id,to,mode,pins){
+  const pl=S.applied.place[id], vm=VMS[id], res=vm.mt?vm.mt.res:vm.memGB;
+  const orig={0:nodeShare(id,pl,0),1:nodeShare(id,pl,1)}, from=1-to;   // 目标节点之外的那个节点是来源
+  Object.assign(pl,{numa:"auto",node:to,mode:mode||pl.mode,pins:pins||(mode==="dedicated"?pl.pins:{})});
+  if(S.draft) S.draft.place[id]=clone(pl);
+  const total=Math.round(res*(1-orig[to])*10)/10;
+  S.migs.push({vm:id,from,to,pct:0,total,bw:1.4,orig,dur:Math.max(5,total/1.4)});
+  EVENTS.unshift({t:now(),vm:id,act:"换节点",from:"N"+from,to:"N"+to,why:`AllowedCPUs 已切到 N${to}（即时）；AllowedMemoryNodes=N${to} 触发内核迁页 ${total}G`,st:"进行中"});
+}
+const now=()=>new Date().toTimeString().slice(0,5);
+setInterval(()=>{ if(!S.migs.length) return;
+  for(const m of [...S.migs]){ m.pct=Math.min(100,m.pct+100/m.dur);
+    if(m.pct>=100){ S.migs.splice(S.migs.indexOf(m),1); const vm=VMS[m.vm], res=vm.mt?vm.mt.res:vm.memGB;
+      vm.nsplit={0:0,1:0}; vm.nsplit[m.to]=res;
+      const ev=EVENTS.find(e=>e.vm===m.vm&&e.st==="进行中"); if(ev) ev.st="已应用";
+      toast(`${m.vm} 内存迁页完成，已落库 numa_node=${m.to}`,"ok"); } }
+  if(S.edit){ document.querySelectorAll("[data-migprog]").forEach(el=>{ const m=S.migs.find(x=>x.vm===el.dataset.migprog); el.style.width=(m?m.pct:100)+"%"; });
+              document.querySelectorAll("[data-migpct]").forEach(el=>{ const m=S.migs.find(x=>x.vm===el.dataset.migpct); el.textContent=m?Math.round(m.pct)+"%":"100%"; }); }
+  else render();
+},1000);
+/* 执行一拍：免费动作全做，换节点最多一台 */
+function runTick(advise){
+  const {acts,li}=diffActions(S.applied); let moved=false, done=0;
+  if(!acts.length){ EVENTS.unshift({t:now(),vm:"—",act:advise?"建议":"再平衡",from:"",to:"",why:`本拍无动作：${li.tier}档 L=${li.L}，当前放置已是最优`,st:advise?"仅建议":"已应用"}); return; }
+  for(const ac of acts){
+    if(advise){ EVENTS.unshift({t:now(),vm:ac.id,act:"建议·"+ac.label,from:ac.from,to:ac.to,why:`${li.tier}档 L=${li.L}`,st:"仅建议"}); continue; }
+    if(ac.cost==="move"){ if(moved||S.migs.length){ continue; } moved=true; startMig(ac.id,ac.t.node,ac.t.mode,ac.t.pins); done++; continue; }
+    const pl=S.applied.place[ac.id]; Object.assign(pl,{mode:ac.t.mode,numa:ac.t.numa,node:ac.t.node,pins:ac.t.pins});
+    if(ac.t.numa==="auto"&&VMS[ac.id].nsplit){ const res=VMS[ac.id].mt?VMS[ac.id].mt.res:VMS[ac.id].memGB; VMS[ac.id].nsplit={0:0,1:0}; VMS[ac.id].nsplit[ac.t.node]=res; }
+    if(S.draft) S.draft.place[ac.id]=clone(pl);
+    EVENTS.unshift({t:now(),vm:ac.id,act:ac.label,from:ac.from,to:ac.to,why:`${li.tier}档 L=${li.L}（oc ${li.oc}× · 内存 ${Math.round(li.memRatio*100)}% · PSI ${li.psi}）`,st:"已应用"}); done++; }
+  const left=acts.filter(a=>a.cost==="move").length-(moved?1:0);
+  if(!advise&&left>0) EVENTS.unshift({t:now(),vm:"—",act:"排队",from:"",to:"",why:`还有 ${left} 个换节点动作留到下一拍（每拍最多 1 台、主机同时 1 个迁移）`,st:"已应用"});
+}
+function setLoad(level){ S.load=level; const run=new Set(LOADS[level].running);
+  for(const id of Object.keys(VMS)) VMS[id].state=run.has(id)?"running":"shutoff";
+  S.migs=S.migs.filter(m=>VMS[m.vm].state==="running"); initUtil(); render();
+  const li=loadIndex(S.applied); toast(`负载模拟：${level==="low"?"低":level==="mid"?"中":"高"} → ${li.tier}档（L=${li.L}）`); }
 function dedCores(plan){ const m={}; for(const [id,pl] of Object.entries(plan.place)){
   if(pl.mode!=="dedicated") continue;
   Object.values(pl.pins).forEach(t=>{ m[t<16?t:t-16]=id; }); } return m; }
@@ -375,6 +550,9 @@ function computeChanges(){
   if(d.wm.evict!==a.wm.evict) out.push({k:"wm",f:"evict",label:`下刷水位 ${a.wm.evict}% → ${d.wm.evict}%`,badge:"now"});
   if(d.wm.back!==a.wm.back) out.push({k:"wm",f:"back",label:`回血水位 ${a.wm.back}% → ${d.wm.back}%`,badge:"now"});
   if(d.spdkBoot!==a.spdkBoot) out.push({k:"boot",label:`低抖动启动档 ${d.spdkBoot?"开启":"关闭"}`,badge:"boot"});
+  const AUTO_L={enabled:"自动放置开关",mode:"控制器模式",dedicateMaxOc:"独占超分上限",releaseOc:"释放超分",numaImbalancePct:"NUMA 失衡 %"};
+  for(const f of Object.keys(AUTO_L)) if(d.auto[f]!==a.auto[f])
+    out.push({k:"auto",f,label:`${AUTO_L[f]} ${fmtAuto(f,a.auto[f])} → ${fmtAuto(f,d.auto[f])}`,badge:"now"});
   for(const id of Object.keys(d.place)){ const pa=a.place[id], pd=d.place[id];
     if(JSON.stringify(pa.pins)!==JSON.stringify(pd.pins)||pa.mode!==pd.mode||pa.numa!==pd.numa)
       out.push({k:"place",id,label: pd.mode==="dedicated"
@@ -388,6 +566,7 @@ function revertChange(ch){
   else if(ch.k==="mem") d.mem[ch.n][ch.f]=a.mem[ch.n][ch.f];
   else if(ch.k==="wm") d.wm[ch.f]=a.wm[ch.f];
   else if(ch.k==="boot") d.spdkBoot=a.spdkBoot;
+  else if(ch.k==="auto") d.auto[ch.f]=a.auto[ch.f];
   else if(ch.k==="place") d.place[ch.id]=clone(a.place[ch.id]);
   S.issues=null; render();
 }
@@ -410,6 +589,8 @@ function validate(plan){
     else if(bud<used*1.2) iss.push({lv:"warn",msg:`NUMA${n} VM 池预算余量不足 20%（${used}G / ${bud}G）`});
   }
   if(plan.wm.evict>=plan.wm.back) iss.push({lv:"block",msg:"下刷水位必须低于回血水位"});
+  if(cnt("spdk")>plan.spdkCap) iss.push({lv:"block",msg:`SPDK 池 ${cnt("spdk")}C 超过启动档声明的候选核上限 ${plan.spdkCap}C（改上限需重启）`});
+  if(plan.auto.dedicateMaxOc>=plan.auto.releaseOc) iss.push({lv:"block",msg:"自动放置：独占超分上限必须低于释放超分（否则 A/B 反复升降）"});
   /* 浮动 VM 只能跑在未预留的共享池上：池被抽空 / 超分过高都要拦 */
   const fs=floatingStats(plan);
   if(fs.vms.length){
@@ -457,7 +638,7 @@ function hostView(){
   <div class="grid"><div class="col">
     ${attrCard()} ${cpuCard(plan)} ${memCard(plan)} ${tieringCard(plan)} ${spdkCard(plan)}
   </div><div class="col">
-    ${inspectorCard(chgs)} ${vmListCard(plan)}
+    ${inspectorCard(chgs)} ${autoCard(plan)} ${vmListCard(plan)}
   </div></div>`;
 }
 function applyBar(chgs){
@@ -531,7 +712,8 @@ function memCard(plan){
         ).join("")}
       </div>
       <div class="mem-note"><span>大页1G 在用 <b>${hp1gUsed(n)}G</b>/${m.hp1g}G（含 SPDK 圈占${n===0?" 4G":" 0G"}）</span>
-        <span>大页2M 在用 <b>${HP2M_USED[n]}G</b></span><span>内存分层借出 <b>${mtLent(n)}G</b>（不占 RAM）</span></div>
+        <span>大页2M 在用 <b>${HP2M_USED[n]}G</b></span><span>内存分层借出 <b>${mtLent(n)}G</b>（不占 RAM）</span>
+        <span>固定 VM 预留 memory.min <b>${fixedReserve(n)}G</b></span></div>
     </div>`; };
   return `<div class="card"><h2>内存与大页（per-NUMA）<span class="hint">${S.edit?"拖竖条手柄调整各段 · 1G 大页变更需重启 ⟳":"段宽 = 规划额度 · 斜纹 = 浮动 VM 实测落点"}</span></h2>
     ${bar(0)}${bar(1)}
@@ -540,6 +722,8 @@ function memCard(plan){
 function VMS_HP_NOTE(n){ const names=Object.entries(P().place)
   .filter(([id,pl])=>pl.backend==="hp1g"&&nodeShare(id,pl,n)>0&&VMS[id].state==="running")
   .map(([id])=>id); return names.length?` · 大页 VM：${names.join("、")}`:""; }
+function fixedReserve(n){ let s=0; for(const [id,pl] of Object.entries(P().place))
+  if(pl.source==="manual"&&pl.reserveGB&&VMS[id].state==="running") s+=pl.reserveGB*nodeShare(id,pl,n); return Math.round(s*10)/10; }
 function mtLent(n){ let s=0; for(const [id,pl] of Object.entries(P().place))
   if(pl.tiering&&VMS[id].mt) s+=VMS[id].mt.swp*nodeShare(id,pl,n); return Math.round(s*10)/10; }
 function tieringCard(plan){
@@ -563,14 +747,59 @@ function tieringCard(plan){
 }
 function spdkCard(plan){
   const cores=Object.entries(plan.corePool).filter(([,p])=>p==="spdk").map(([c])=>c);
-  return `<div class="card"><h2>SPDK 预留 <span class="hint">本期只圈资源；vhost target 部署为后续</span></h2>
+  const over=cores.length>plan.spdkCap;
+  return `<div class="card"><h2>SPDK 预留 <span class="hint">cgroup isolated 分区（非 isolcpus）· 在线加核 = 拖核到 SPDK 图例</span></h2>
     <div class="sub" style="display:flex;gap:18px;flex-wrap:wrap;align-items:center">
       <span>隔离核 <b class="mono">${cores.length?cores.map(c=>c+"·"+(+c+16)).join(", "):"（空）"}</b></span>
-      <span>大页圈占 <b>1G×4（NUMA0）</b></span><span>IRQ 已驱离 <b>${cores.length?"是":"—"}</b></span>
+      <span>候选核上限 <b style="color:${over?"var(--bad)":"var(--ink)"}">${cores.length}C / ${plan.spdkCap}C</b><span title="reactor mask 与低抖动启动档都按上限声明；实际给多少核由 cgroup 在上限内动态决定"> ⓘ</span></span>
+      <span>大页圈占 <b>1G×4（NUMA0）</b></span><span>IRQ / workqueue 已驱离 <b>${cores.length?"是":"—"}</b></span>
+      <span>reactor <b>${cores.length*2} 活跃 / ${plan.spdkCap*2} 上限</b>（动态调度器）</span>
       <label style="display:inline-flex;gap:6px;align-items:center">
         <input type="checkbox" data-act="spdk-boot" ${plan.spdkBoot?"checked":""} ${S.edit?"":"disabled"}
-          style="width:auto">低抖动启动档（nohz_full）<span class="badge b-boot">需重启</span></label>
-    </div></div>`;
+          style="width:auto">低抖动启动档（nohz_full / rcu_nocbs / managed_irq，候选核）<span class="badge b-boot">需重启</span></label>
+    </div>
+    <div class="sub" style="margin-top:8px">分区 <span class="mono">cpuset.cpus.partition=isolated</span>（回读确认非 <span class="mono">isolated invalid</span>）· 残余内核活动 &lt; 0.2%（tick / per-CPU kthread）· 加核顺序：共享池摘核 → 写入 spdk 分区 → 回读 → 驱离 IRQ</div></div>`;
+}
+/* §3.10 自动放置控制器卡 */
+function fmtAuto(f,v){ return f==="enabled"?(v?"开":"关"):f==="mode"?(v==="apply"?"应用":"仅建议"):f==="numaImbalancePct"?v+"%":v+"×"; }
+function autoCard(plan){
+  const a=plan.auto, st=autoStats(plan), dis=S.edit?"":"disabled";
+  const {acts,li}=diffActions(plan);
+  const fixedN=Object.entries(plan.place).filter(([id,pl])=>pl.source==="manual"&&VMS[id].state==="running").length;
+  const autoN=Object.entries(plan.place).filter(([id,pl])=>pl.source==="auto"&&VMS[id].state==="running").length;
+  const ocColor=v=>v>a.releaseOc?"var(--bad)":v>a.dedicateMaxOc?"var(--warn)":"var(--ok)";
+  const tierCls={"宽裕":"var(--ok)","适中":"var(--warn)","紧张":"var(--bad)"}[li.tier];
+  return `<div class="card"><h2>自动放置 <span class="hint">${a.enabled?(a.mode==="apply"?"控制器运行中 · 每 30s 一拍":"仅建议，不执行"):"已关闭"}</span></h2>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12.5px">
+      <label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" data-act="auto-enabled" ${a.enabled?"checked":""} ${dis} style="width:auto">启用</label>
+      <div class="seg-ctl"><button class="btn ${a.mode==="apply"?"on":""}" data-act="auto-mode" data-v="apply" ${dis}>应用</button>
+        <button class="btn ${a.mode==="advise"?"on":""}" data-act="auto-mode" data-v="advise" ${dis}>仅建议</button></div>
+      <span class="sub">运行中：固定 <b>${fixedN}</b> · 自动 <b>${autoN}</b></span></div>
+    <div class="tierbox" style="border-color:${tierCls}">
+      <div><span class="sub">当前档位</span><br><b style="color:${tierCls};font-size:16px">${li.tier}</b> <span class="mono sub">L=${li.L}</span></div>
+      <div class="sub">oc <b style="color:${ocColor(li.oc)}">${li.oc===Infinity?"∞":li.oc+"×"}</b> · VM 池内存 <b>${Math.round(li.memRatio*100)}%</b> · PSI <b>${li.psi}</b><br>
+        独占需求 <b>${li.needDed}</b> 核 / 可独占 <b>${Math.max(0,li.availDed)}</b> 核（扣固定 VM 与每节点保底 ${MIN_SHARED_CORES} 核）<br>
+        <span>目标形态：${TIER_FORM[li.tier]}</span></div>
+    </div>
+    <div class="sub" style="display:flex;gap:8px;align-items:center;margin:6px 0">负载模拟
+      <div class="seg-ctl">${[["low","低"],["mid","中"],["high","高（再启 3 台）"]].map(([k,n])=>`<button class="btn ${S.load===k?"on":""}" data-act="sim-load" data-v="${k}">${n}</button>`).join("")}</div></div>
+    <div class="kv">
+      <span>独占超分上限</span><span><input class="thr-in" type="number" step="0.1" min="0.5" max="4" value="${a.dedicateMaxOc}" data-auto="dedicateMaxOc" ${dis}> × 宽裕档条件之一</span>
+      <span>释放超分</span><span><input class="thr-in" type="number" step="0.1" min="0.5" max="8" value="${a.releaseOc}" data-auto="releaseOc" ${dis}> × ≥ 此值进入紧张档</span>
+      <span>NUMA 失衡</span><span><input class="thr-in" type="number" step="1" min="5" max="60" value="${a.numaImbalancePct}" data-auto="numaImbalancePct" ${dis}> % 超过才允许换节点</span>
+    </div>
+    <div class="nodestat">${[0,1].map(n=>`<div><b>NUMA ${n}</b> · oc <b style="color:${ocColor(st[n].oc)}">${st[n].oc===Infinity?"∞":st[n].oc+"×"}</b><br>
+      共享线程 <b>${st[n].threads}</b> · 空闲独占核 <b>${st[n].freeDed}</b> · 空闲内存 <b>${st[n].freeMem}G</b></div>`).join("")}</div>
+    ${S.migs.map(m=>`<div class="sub"><b>迁移中</b>：${m.vm} N${m.from} → N${m.to}（vCPU 已切，内存迁页 ${m.total}G · ${m.bw} GB/s）</div>
+      <div class="prog"><i data-migprog="${m.vm}" style="width:${m.pct}%"></i></div><div class="sub"><span data-migpct="${m.vm}">${Math.round(m.pct)}%</span> · 目标节点占比 ≥ 95% 即完成，超时不回滚</div>`).join("")}
+    <div class="sub" style="margin-top:8px"><b>本拍动作（求解目标 vs 当前）</b>${acts.length?"":" · 当前放置已是最优"}</div>
+    ${acts.map(ac=>`<div class="act"><span class="mini" style="${ac.cost==="move"?"border-color:var(--warn);color:var(--warn)":"border-color:var(--ok);color:var(--ok)"}">${ac.cost==="move"?"有成本":"免费"}</span>
+      <b>${ac.id}</b> ${ac.from} → ${ac.to} <span class="why">${ac.label}</span></div>`).join("")}
+    <div style="display:flex;gap:8px;margin:8px 0 4px"><button class="btn pri" data-act="auto-tick" data-v="apply" ${a.enabled&&a.mode==="apply"?"":"disabled"}>执行一拍</button>
+      <button class="btn ghost" data-act="auto-tick" data-v="advise">仅出建议</button></div>
+    ${EVENTS.slice(0,8).map(e=>`<div class="ev"><span class="t">${e.t}</span><span><b>${e.vm}</b> ${e.act} ${esc(e.from)}${e.to?" → "+esc(e.to):""}
+      <span class="mini">${e.st}</span><br><span class="why">${esc(e.why)}</span></span></div>`).join("")}
+  </div>`;
 }
 function inspectorCard(chgs){
   let body="";
@@ -594,6 +823,9 @@ function vmListCard(plan){
         <span class="dot" style="background:${vm.state==="running"?"var(--ok)":"var(--line2)"}"></span>
         <span class="nm">${id}</span><span class="sub mono">${vm.vcpus}v/${vm.memGB}G</span>
         <span class="cs">
+          <span class="tier ${tierOf(pl)}" title="放置等级 ${tierOf(pl)}">${tierOf(pl)}</span>
+          <span class="lock" title="${pl.source==="auto"?"由控制器自动放置":forcedManual(pl)?"强制固定（vNUMA / 1G 大页）":"用户手动指定，固定"}">${pl.source==="auto"?"自动":"🔒固定"}</span>
+          ${S.migs.some(m=>m.vm===id)?`<span class="mini" style="color:var(--accent);border-color:var(--accent)">迁移中</span>`:""}
           <span class="mini" ${isFloating(pl)?'style="border-style:dashed"':""}>${pl.mode==="dedicated"?"独占":isFloating(pl)?"浮动":"共享"}</span>
           <span class="mini">${pl.numa==="manual"?"vNUMA×"+(pl.vnodes||[]).length:pl.numa==="auto"?"N"+pl.node:"不绑 NUMA"}</span>
           <span class="mini">${{anon:"匿名",memfd:"memfd",hp2m:"大页2M",hp1g:"大页1G"}[pl.backend]}</span>
@@ -610,12 +842,22 @@ function vmView(id){
   <div class="vhead"><button class="back" data-act="back">← 返回资源规划</button><h1>${id}</h1>
     <span class="chip"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:${running?"var(--ok)":"var(--line2)"}"></span>${running?"运行中":"已关机"}</span>
     <span class="chip mono">${vm.vcpus} vCPU · ${vm.memGB}G</span>
-    ${vm.分布式存储?`<span class="chip">分布式存储盘</span>`:""}
+    ${vm.sharedDisk?`<span class="chip">分布式存储盘</span>`:""}
     <span class="sp"></span>
-    ${dirty?`<span class="sub">${running?"绑定可热调；后端/NUMA 下次启动生效":"关机状态，全部下次启动生效"}</span>
+    ${dirty?`<span class="sub">${running?"绑核 / 绑定节点在线生效（内存后台迁页）；vNUMA / 后端下次启动":"关机状态，全部下次启动生效"}</span>
       <button class="btn ghost" data-act="vm-cancel">放弃</button>
       <button class="btn pri" data-act="vm-save">保存放置</button>`:""}
   </div>
+  <div class="auto-banner">
+    <span class="tier ${tierOf(d)}">${tierOf(d)}</span>
+    ${forcedManual(d)?`<span>强制<b>固定</b>：${d.numa==="manual"?"显式 vNUMA":"1G 大页后端"} 的 VM 不参与自动求解</span>`
+      : d.source==="auto"?`<span>由控制器<b>自动放置</b>为 ${tierOf(d)} 级（当前 ${loadIndex(S.applied).tier}档）；手动修改任何放置字段并保存 = 转为固定</span>
+        <button class="btn" data-act="vm-source" data-v="manual">改为固定</button>`
+      : `<span>用户手动指定，<b>固定</b>：占用的核与内存预留先从可用资源扣除，控制器只读不写</span><button class="btn" data-act="vm-source" data-v="auto">交回自动放置</button>`}
+    ${d.source==="manual"&&!forcedManual(d)?`<label class="sub" style="display:inline-flex;gap:6px;align-items:center">内存预留 memory.min
+      <input class="thr-in" type="number" min="0" max="${vm.memGB}" step="1" value="${d.reserveGB||0}" data-act="vm-reserve"> G</label>`:""}
+  </div>
+  ${running&&(S.migs.some(m=>m.vm===id)||vm.nsplit)?migPanel(id,d):""}
   <div class="grid"><div class="col">
     <div class="card"><h2>CPU 放置</h2>
       <div class="radio-row">
@@ -626,7 +868,7 @@ function vmView(id){
       </div>
       ${d.mode==="dedicated"?pinEditor(id,d):sharedInfo(id,d)}
     </div>
-    <div class="card"><h2>NUMA 放置 ${running?'<span class="badge b-vm">需重启生效</span>':""}</h2>
+    <div class="card"><h2>NUMA 放置 ${running?(d.numa==="manual"?'<span class="badge b-vm">vNUMA 需重启</span>':'<span class="badge b-hot">在线：vCPU 即时 · 内存后台迁页</span>'):""}</h2>
       <div class="radio-row">
         <button class="radio-card ${d.numa==="none"?"on":""}" data-act="vm-numa" data-v="none">${NUMA_MODES.none}
           <small>默认。cpuset.mems = 全部节点，内存 first-touch，可能跨节点</small></button>
@@ -643,7 +885,7 @@ function vmView(id){
     </div>
   </div><div class="col">
     <div class="card"><h2>内存后端</h2>
-      ${["anon","memfd","hp2m","hp1g"].map(b=>{ const dis=(b==="anon"&&vm.分布式存储);
+      ${["anon","memfd","hp2m","hp1g"].map(b=>{ const dis=(b==="anon"&&vm.sharedDisk);
         return `<button class="radio-card ${d.backend===b?"on":""}" style="width:100%;margin-bottom:6px"
           data-act="vm-backend" data-v="${b}" ${dis?"disabled":""}>${BACKENDS[b]}
           <small>${b==="anon"?"唯一支持内存分层；不可接 vhost-user":b==="memfd"?"分布式存储/vhost 可用；无大页收益":"vhost-user 推荐；从大页池整额扣减"}${dis?" ·（分布式存储盘 VM 不可用）":""}</small></button>`;}).join("")}
@@ -654,14 +896,30 @@ function vmView(id){
           ${["high","normal","low"].map(p=>`<option ${d.prio===p?"selected":""}>${p}</option>`).join("")}</select>`:""}
       </label></div>
     <div class="card"><h2>生效性</h2><div class="sub">
-      · 独占绑定/解绑：运行中<b>热调</b>（QMP query-cpus-fast + sched_setaffinity）<br>
-      · 浮动 ↔ 绑定单节点（仅 cpuset）：运行中<b>热调</b>；已分配内存不迁移，新页按新策略<br>
-      · vNUMA / 内存后端：写入 vm_config，<b>下次启动生效</b><br>
+      · 独占绑定/解绑：运行中<b>即时</b>（QMP query-cpus-fast + sched_setaffinity）<br>
+      · 换绑定节点：运行中<b>在线</b>——先写 AllowedCPUs 切 vCPU（即时），再写 AllowedMemoryNodes 触发内核异步迁页（cgroup v2 cpuset.mems 语义），轮询 numa_maps 到 ≥95%<br>
+      · 浮动 → 绑定节点：只写 cpuset，几乎免费；绑定 → 浮动：即时<br>
+      · vNUMA / 内存后端：写入 vm_config，<b>下次启动生效</b>；内存预留 memory.min <b>即时</b><br>
       · 内存分层开关/优先级：<b>即时</b>（总控下一拍生效）
       ${d.mode==="dedicated"&&d.numa==="none"?`<div class="issue warn" style="margin-top:8px">⚠ 独占绑核但内存不绑 NUMA：vCPU 固定在 ${[...new Set(Object.values(d.pins).map(t=>coreNode(t<16?t:t-16)))].map(n=>"N"+n).join("/")||"—"}，内存却可能落到另一节点，建议改为「绑定单节点」</div>`:""}</div></div>
   </div></div>`;
 }
 /* 共享（不绑核）说明：列出当前可调度的线程范围 */
+/* 在线 NUMA 迁移面板：当前内存分布 + 迁移进度/步骤 */
+function migPanel(id,d){
+  const vm=VMS[id], pl=S.applied.place[id], res=vm.mt?vm.mt.res:vm.memGB, m=S.migs.find(x=>x.vm===id);
+  const s0=nodeShare(id,pl,0), s1=nodeShare(id,pl,1);
+  const steps=["准入检查","AllowedCPUs → 目标节点（vCPU 即时）","AllowedMemoryNodes（内核后台迁页）","等待 numa_maps ≥ 95%","落库 + 事件"];
+  const cur=m?(m.pct<95?3:4):-1;
+  return `<div class="card" style="margin-bottom:14px"><h2>内存分布与在线迁移 <span class="hint">numa_maps 实测 · 常驻 ${res}G</span></h2>
+    <div class="nsbar"><i style="flex:${Math.max(s0,0.001)};background:var(--p-virt)" title="NUMA0"></i><i style="flex:${Math.max(s1,0.001)};background:var(--hp1g)" title="NUMA1"></i></div>
+    <div class="sub">NUMA0 <b class="mono">${Math.round(res*s0*10)/10}G</b> · NUMA1 <b class="mono">${Math.round(res*s1*10)/10}G</b>
+      ${m?` · <b style="color:var(--accent)">迁移中 N${m.from} → N${m.to}</b>：已迁 <span data-migpct="${id}">${Math.round(m.pct)}%</span>（${m.total}G @ ${m.bw} GB/s，超时不回滚）`:""}</div>
+    ${m?`<div class="prog"><i data-migprog="${id}" style="width:${m.pct}%"></i></div>`:""}
+    <div class="steps">${steps.map((s,i)=>`<span class="${m?(i<cur?"done":i===cur?"cur":""):""}">${i+1} ${s}</span>`).join("")}</div>
+    ${!m?`<div class="sub">在上方选「绑定单节点」并换一个节点后保存，即触发这条在线流程（准入：非 vfio / 非 1G 大页 / 非 vNUMA，目标节点空闲内存 ≥ 常驻×1.1，主机无其它迁移）。</div>`:""}
+  </div>`;
+}
 function sharedInfo(id,d){
   const ded=dedCores(S.applied);
   const per=n=>nodeCores(n).filter(c=>S.applied.corePool[c]==="vm"&&!ded[c]).flatMap(coreThreads);
@@ -738,7 +996,11 @@ document.addEventListener("click",e=>{
     if(iss.some(i=>i.lv==="block")){ S.issues=iss; render(); toast("存在阻塞项，无法应用","err"); return; }
     const chgs=computeChanges(); const boot=chgs.filter(c=>c.badge==="boot").map(c=>c.label);
     toast("任务 applyResourcePlan 已提交…");
-    setTimeout(()=>{ S.applied=clone(S.draft); S.edit=false; S.draft=null; S.issues=null; S.sel.clear();
+    setTimeout(()=>{ const old=S.applied; S.applied=clone(S.draft); S.edit=false; S.draft=null; S.issues=null; S.sel.clear();
+      /* 运行中 VM 在主机视图被拖成独占/换了节点 → 走在线迁移 */
+      for(const [id,pl] of Object.entries(S.applied.place)){ const o=old.place[id];
+        if(VMS[id].state==="running"&&pl.numa==="auto"&&!(o.numa==="auto"&&o.node===pl.node)&&!S.migs.length&&nodeShare(id,o,pl.node)<0.95){
+          const keep=clone(pl); S.applied.place[id]=clone(o); startMig(id,keep.node,keep.mode,keep.pins); Object.assign(S.applied.place[id],{source:keep.source}); } }
       S.pendBoot=boot; render(); toast(`应用成功 · ${chgs.length-boot.length} 项已生效${boot.length?` · ${boot.length} 项待重启`:""}`,"ok"); },900);
     return; }
   if(act==="dismiss-banner"){ S.pendBoot=[]; render(); return; }
@@ -753,6 +1015,12 @@ document.addEventListener("click",e=>{
   if(act==="vn-add"){ S.vmDraft.vnodes.push({vcpus:1,memGB:1,host:1}); render(); return; }
   if(act==="vn-del"){ S.vmDraft.vnodes.splice(+el.dataset.v,1); render(); return; }
   if(act==="vm-cancel"){ S.vmDraft=clone(S.applied.place[S.route]); render(); return; }
+  if(act==="vm-source"){ S.vmDraft.source=el.dataset.v; render(); return; }
+  if(act==="auto-enabled"){ if(S.edit){ S.draft.auto.enabled=el.checked; S.issues=null; render(); } return; }
+  if(act==="auto-mode"){ if(S.edit){ S.draft.auto.mode=el.dataset.v; S.issues=null; render(); } return; }
+  if(act==="auto-tick"){ const advise=el.dataset.v==="advise"; toast(advise?"任务 placementAdvise 已提交…":"任务 placementRebalance 已提交…");
+    setTimeout(()=>{ runTick(advise); initUtil(); render(); toast(advise?"建议已生成":"控制器已执行一拍","ok"); },600); return; }
+  if(act==="sim-load"){ setLoad(el.dataset.v); return; }
   if(act==="vm-save"){ saveVm(); return; }
   /* 池图例点击 = 分配所选 */
   if(el.dataset.pool && S.edit && S.sel.size){
@@ -769,6 +1037,8 @@ document.addEventListener("change",e=>{
   if(el.dataset.act==="vm-node"){ S.vmDraft.node=+el.value; render(); return; }
   if(el.dataset.act==="vm-tiering"){ S.vmDraft.tiering=el.checked; render(); return; }
   if(el.dataset.act==="vm-prio"){ S.vmDraft.prio=el.value; return; }
+  if(el.dataset.act==="vm-reserve"){ S.vmDraft.reserveGB=Math.max(0,+el.value||0); render(); return; }
+  if(el.dataset.auto&&S.edit){ S.draft.auto[el.dataset.auto]=+el.value; S.issues=null; render(); return; }
   if(el.dataset.act==="spdk-boot"){ if(S.edit){ S.draft.spdkBoot=el.checked; render(); } return; }
   if(el.dataset.vn!==undefined){ const v=S.vmDraft.vnodes[+el.dataset.vn];
     v[el.dataset.f]=el.dataset.f==="host"?+el.value:Math.max(1,+el.value||1); render(); return; }
@@ -791,9 +1061,21 @@ function saveVm(){
   if(d.numa==="manual"){ const sv=d.vnodes.reduce((s,v)=>s+ +v.vcpus,0), sm=d.vnodes.reduce((s,v)=>s+ +v.memGB,0);
     if(sv!==vm.vcpus||sm!==vm.memGB){ toast("vNUMA 的 vCPU/内存合计必须等于 VM 规格","err"); return; } }
   const a=S.applied.place[id];
+  const F=["mode","pins","numa","node","vnodes","backend"], changed=F.some(f=>JSON.stringify(a[f])!==JSON.stringify(d[f]));
+  if(forcedManual(d)) d.source="manual";
+  else if(changed&&d.source==="auto"&&a.source==="auto"){ d.source="manual"; toast("已手动修改放置，来源转为手动（控制器不再自动调整）"); }
   const hot = vm.state==="running" && a.backend===d.backend && d.numa!=="manual" && a.numa!=="manual";
-  toast(vm.state==="running"?(hot?"PATCH vm placement 已提交（cpuset/绑定热调）…":"PATCH 已提交：绑定热调，vNUMA/后端下次启动生效…"):"已保存，下次启动生效…");
-  setTimeout(()=>{ S.applied.place[id]=clone(d); if(S.draft) S.draft.place[id]=clone(d);
+  /* 运行中换绑定节点 = 在线迁移（准入） */
+  const needMig = vm.state==="running" && d.numa==="auto" && !(a.numa==="auto"&&a.node===d.node) && nodeShare(id,a,d.node)<0.95;
+  if(needMig){
+    if(d.backend==="hp1g"){ toast("1G 大页 VM 不支持在线换节点，下次启动生效"); }
+    else if(S.migs.length){ toast("主机已有内存迁移进行中，请稍后再试（同一时刻最多 1 个）","err"); return; }
+    else { const res=vm.mt?vm.mt.res:vm.memGB; if(vmPoolBudget(d.node)-vmPoolUsed(d.node)<res*1.1){ toast(`NUMA${d.node} 空闲内存不足（需 ≥ ${Math.round(res*1.1*10)/10}G）`,"err"); return; } }
+  }
+  toast(vm.state==="running"?(needMig&&d.backend!=="hp1g"?"PATCH 已提交：vCPU 已切到目标节点，内存开始后台迁页…":hot?"PATCH vm placement 已提交（cpuset/绑定即时生效）…":"PATCH 已提交：绑定即时，vNUMA/后端下次启动生效…"):"已保存，下次启动生效…");
+  setTimeout(()=>{ if(needMig&&d.backend!=="hp1g"){ const keep=clone(d); S.applied.place[id]=clone(a); startMig(id,d.node,keep.mode,keep.pins); Object.assign(S.applied.place[id],{source:keep.source,reserveGB:keep.reserveGB,backend:keep.backend,tiering:keep.tiering,prio:keep.prio}); S.vmDraft=clone(S.applied.place[id]); }
+    else { S.applied.place[id]=clone(d); }
+    if(S.draft) S.draft.place[id]=clone(S.applied.place[id]);
     render(); toast("放置已保存","ok"); },700);
 }
 
@@ -850,7 +1132,7 @@ function dedicateVm(id,startCore){
   const cand=nodeCores(node).filter(c=>c>=startCore&&S.draft.corePool[c]==="vm"&&(!ded[c]||ded[c]===id)).slice(0,need);
   if(cand.length<need){ toast(`从核 ${startCore} 起，NUMA${node} 池内空闲核不足（需 ${need} 个）`,"err"); return; }
   const pl=S.draft.place[id], wasFloating=isFloating(pl);
-  pl.mode="dedicated"; pl.pins={}; pl.node=node; if(pl.numa!=="manual") pl.numa="auto";
+  pl.mode="dedicated"; pl.pins={}; pl.node=node; if(pl.numa!=="manual") pl.numa="auto"; pl.source="manual";
   let v=0; for(const c of cand) for(const t of coreThreads(c)){ if(v<vm.vcpus) pl.pins[v++]=t; }
   S.issues=null; render();
   toast(`${id} → 独占核 ${cand.join(",")}（NUMA${node}）${wasFloating?"，内存随之绑 NUMA"+node+"（下次启动）":""}`);
