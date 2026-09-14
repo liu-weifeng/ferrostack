@@ -842,4 +842,26 @@ xvirt-autotest 加 stage（plan validate/apply 幂等性、缩池阻塞、互斥
 | Web 控制台 | `xvirt-client/src/components/host/resplan/*` | `ResourcePlanTab`（查看/编辑、草稿 diff、校验、应用任务跟踪、横幅）、`CpuTopologyBoard`（核→池拖拽/多选、VM→核独占绑定）、`MemoryBoard`（主机级预算条 + 逐节点大页条，Pointer 手柄）、`TieringBoard`（压力计 + 可拖水位线 + 逐 VM 条）、`VmPlacementList` + 放置对话框（PATCH placement）、`planModel.js`（派生/diff/轻量校验） |
 | Web 控制台 | `HostDashboardPage.jsx` / `App.jsx` / `management/Console.jsx` / `api/vcenter.js` / `i18n/{zh,en}.js` / `styles/resplan.css` | 两个壳都挂「资源规划」tab；API；全部文案 i18n |
 
-与设计的已知差异（后续补）：内存板的 OS/虚拟化预留是主机级字段，按主机级条拖动，不做逐节点手柄；浮动 VM 的跨节点内存分布在未接入 `numastat` 采集前按节点数均分估算；§3.10 自动放置控制器（P2.5）与 `placement_event` 审计表未实现，`auto_placement` 字段只存储透传；`x-memdev-rebind` 未做，vNUMA VM 只在启动时落位；打包侧需在 `build-deb-xvirt` 为 hyper-agent 加 `xvirt-resource-plan` 入口与单元安装（见 xvirt 仓）。
+### §9.1 P2.5 自动放置（2026-09-14 补齐）
+
+按 §3.10 的「固定 / 自动两类 + 负载档位 + 求解器」模型实现：
+
+| 组件 | 文件 | 内容 |
+|---|---|---|
+| 宿主机代理 | `support/resource_plan/placement.py` | 控制器全部逻辑。纯函数部分：`collect_vms`（sidecar 意图 + pidfile 运行态 + `numa_maps` 实测落点）、`node_stats`（每节点共享线程 / oc / 空闲独占核 / 空闲内存，浮动 vCPU 按线程占比分摊）、`load_index`（L = max(oc/bind_max_oc, 内存用量比, PSI) + 独占核供需）、`raw_tier` / `pick_tier`（三档 + 滞回：收紧立即、放松需 `promote_stable_s`）、`solve`（固定 VM 先占位扣资源 → 自动 VM 按优先级与 vCPU 降序装箱，以当前放置为初解、优先复用已绑核）、`diff_actions`（pin / unpin / bind / unbind / move，按成本排序）。`Controller` 类负责 I/O 与守卫：冷却、启动稳定期、每拍最多一次换节点、单次搬动上限、目标节点余量、plan 应用中 / 在线迁移中 / 内存分层下刷档暂停；执行后回写 sidecar 并发 `vm.placement_changed` |
+| 宿主机代理 | `controller/resource_plan.py`、`shell.py` | action `placement_status` / `placement_rebalance` / `placement_advise`；后台线程每 30s 一拍（`XVIRT_PLACEMENT_INTERVAL` 可调） |
+| 宿主机代理 | `vm/guest.py` | `placement.json` sidecar 改为**总是写**并带 `spec`（name / vcpus / memory_mb / priority / tiering / vfio）——控制器据此独立于管理服务求解 |
+| 宿主机代理 | `metrics_exporter/collectors/resource_plan.py` | `xvirt_placement_load_index` / `_tier{tier}` / `_node_oc{node}` / `_node_free_dedicated_cores` / `_node_free_mem_bytes` / `_dedicated_cores{kind}` / `_pending_actions` / `xvirt_vm_placement_tier{vm_uuid,tier,fixed}` |
+| 虚拟机监控服务 | `support/placement.py`、`vm/guest.py`、`controller/vm.py` | `apply_placement()` 按 §3.10.5 的硬性顺序执行：解 pin → 改 cpuset → 改 mems（触发内核后台迁页）→ 重 pin；action `vm_apply_placement`；`pid_of_scope` 从 scope cgroup 取 QEMU pid |
+| 管理服务 | `service/resource_plan.rs`、`controller/vcenter/resource_plan.rs`、`service/event.rs` | `placement_event` 审计表；`GET /host/{uuid}/placement`（控制器快照 + 审计）、`POST …?action=rebalance\|advise`（异步任务 `rebalancePlacement`）；摄取 `vm.placement_changed` → 写审计 + 同步 `vm_config` 放置列（只覆盖 `placement_source=auto` 的 VM） |
+| Web 控制台 | `components/host/resplan/AutoPlacementCard.jsx` 等 | 自动放置卡：档位与 L 指数三来源、独占核供需、目标形态、每节点统计、本拍动作（免费 / 有成本）、迁移进度、最近决策、阈值编辑、执行一拍 / 仅出建议；VM 列表 A/B/C/V 等级徽标 + 固定 / 自动；VM 放置对话框的固定 / 自动横幅与在线 NUMA 迁移面板（实测分布 + 五步流程 + 准入拦截）；内存条新增「固定 VM 预留」段 |
+
+控制器的两个暂停条件是真实信号：plan 对账期间 `apply.reconcile` 在 `/run/xvirt/resource-plan.applying` 落标记，在线迁移期间 lictor 的 `migrate_out` 在 `/run/xvirt/migrating-<uuid>` 落标记（cleanup / abort / 失败都清），控制器看到任一标记即本拍暂停。
+
+SPDK 部分（§3.8 结论）同步落地：plan 的 `pools.spdk.cap` 声明候选核上限，校验拦截超限并把改上限标为需重启；SPDK 卡显示 `实际核数 / 上限` 与分区回读、在线加核顺序说明。
+
+单测：`tests/test_placement.py` 15 例（分类 / 节点统计 / 档位与滞回 / 求解四场景 / 差分动作），`tests/test_resource_plan.py` 12 例。
+
+### §9.2 已知差异（后续补）
+
+内存板的 OS/虚拟化预留是主机级字段，按主机级条拖动，不做逐节点手柄；ferrovirt 侧浮动 VM 的跨节点内存分布在未接入 `numastat` 采集前按节点数均分估算（agent 控制器已用 `numa_maps` 实测）；`x-memdev-rebind` 未做，vNUMA VM 强制固定、只在启动时落位；求解器目前是贪心装箱 + 稳定性偏置，§3.10.2 的局部搜索（两两交换）未实现——VM 数在百量级时贪心解已足够接近，后续可按 Cost 增量加一轮交换；打包侧需在 `build-deb-xvirt` 为 hyper-agent 加 `xvirt-resource-plan` 入口与单元安装（见 xvirt 仓）。
