@@ -754,6 +754,101 @@ db-core-01   [high]   [常驻▓▓▓▓▓▓▓▓▓▓]            常驻 1
 管理服务指标代理的 L1 白名单补 `xvirt_cpu_ / xvirt_pool_ / xvirt_slice_ /
 xvirt_node_ / xvirt_vm_tiering_` 前缀。页面查询频率 5s，与既有 VMMonitor 一致。
 
+### 6.1 NUMA 可观测性：分布展示与健康判定
+
+要回答两个运维问题——「虚拟机的 vCPU 与内存分别落在哪个节点」和「哪个节点的内存或
+CPU 已经不健康」——需要的指标按获取成本分三档。第一档零新依赖、数据已在手；第三档
+才需要硬件计数器，但它是「内存访问慢」唯一可信的答案。
+
+**第一档 · sysfs/procfs 即可，零新依赖**
+
+| 指标 | 源 | 回答 |
+|---|---|---|
+| `xvirt_vm_numa_bytes{vm_uuid,node}` | `/proc/<pid>/numa_maps` 聚合 | 该 VM 的内存实际散在哪几个节点 |
+| `xvirt_vm_vcpu_cpu{vm_uuid,vcpu}` | 线程名 `CPU <n>/KVM` 筛出 vCPU 线程，取 `/proc/<pid>/task/<tid>/stat` 第 39 字段 `processor`；值即当前物理 CPU 号 | vcpu → 物理 CPU 的**实测**映射，不需要 QMP，绑核与浮动都适用 |
+| `xvirt_vm_vcpu_node{vm_uuid,node}` | 同上按节点归并 | 该 VM 有多少 vCPU 当前在这个节点上 |
+| `xvirt_node_numastat{node,kind}` | `node*/numastat` | `numa_miss` / `numa_foreign` 增速 = 分配溢出，该节点内存吃紧 |
+| `xvirt_node_vmstat{node,kind}` | `node*/vmstat` | `pgsteal` / `workingset_refault` 增速 = 该节点正在回收 |
+| `xvirt_node_distance{from,to}` | `node*/distance` | 跨节点代价矩阵（>2 节点时才有区分度） |
+
+vCPU 线程的识别靠 QEMU 的命名约定（`kvm_start_vcpu_thread` 把线程命名为
+`CPU <n>/KVM`，comm 截断到 15 字节仍可辨），因此**不需要 QMP**，代理可以独立采到真实
+落点。由它与 `numa_bytes` 派生出本方案最关键的一个量，直接由代理计算并导出：
+
+```
+远端访存比例(vm) = 1 − Σ_node [ (该节点常驻占比) × (该节点上的 vCPU 占比) ]
+xvirt_vm_remote_mem_ratio{vm_uuid}
+```
+
+vCPU 跨多个节点时按 vCPU 数加权，而不是只看「绑定节点」——浮动 VM 本来就没有绑定
+节点。拿不到实测落点（未运行、线程名不可辨）时返回**空值而非 0**，不参与健康合成，
+避免用假值把节点判成健康。
+
+**第二档 · 裸机 sysfs，虚拟机里读不到**
+
+| 指标 | 源 | 为什么需要 |
+|---|---|---|
+| `xvirt_cpu_freq_hertz{cpu}` | `cpufreq/scaling_cur_freq` | 降频的核忙比看着 100%，实际算力可能只有别的核六成；只看忙比会误判 |
+| `xvirt_cpu_throttle_total{cpu,kind}` | `thermal_throttle/*` | 热 / 功耗封顶导致的节流次数 |
+
+**第三档 · 硬件计数器与 eBPF**
+
+| 指标 | 源 | 前提 |
+|---|---|---|
+| `xvirt_vm_mbm_local_bytes` / `_total_bytes{vm_uuid}` | Intel RDT MBM，经 resctrl 监控组 | CPU 支持 RDT；把每台 VM 的 scope 进程加进一个 mon 组。RMID 数量有限，需按 VM 数核算 |
+| `xvirt_vm_llc_occupancy_bytes{vm_uuid}` | 同上 | 同上 |
+| `xvirt_node_dram_bandwidth_bytes{node,op}` | uncore IMC PMU（`cas_count_read/write`） | 裸机、uncore PMU 可用。注意开了 SNC 时一个 socket 含多个节点，IMC 不等于 per-node |
+| `xvirt_vm_cpi` / `xvirt_vm_mem_stall_ratio{vm_uuid}` | `perf stat` 按 cgroup 采 cycles / instructions / 停顿周期 | perf_event 权限 |
+| `xvirt_runq_latency_seconds{cgroup,bucket}` | ebpf_exporter 加 runqlat 程序 | 监控栈已有 ebpf_exporter（现只加载 biolatency 与 cfs-throttling） |
+
+**健康判定**。没有任何接口能直接读出「这个节点内存访问慢」，只能用几个信号合成。
+内存侧：
+
+```
+locality   = 本地访存 / 总访存        ← RDT MBM 直接给；无 RDT 时用 numa_maps 估
+saturation = 节点 DRAM 带宽 / 峰值     ← uncore IMC
+spill      = numa_miss + numa_foreign 增速（归一）
+reclaim    = pgsteal + workingset_refault 增速（归一）
+mem_health(node) = max(1 − locality, saturation, spill, reclaim)
+```
+
+带宽饱和度是延迟的**先行指标**：DRAM 延迟在带宽超过峰值约七成后开始非线性上升，
+到九成可能翻倍。所以判据取 saturation，而不是去直接测延迟。CPU 侧：
+
+```
+busy       = /proc/stat 每核忙比
+runq       = 运行队列等待延迟 p95（eBPF）
+throttled  = cgroup cpu.stat 的 throttled_usec
+freq_ratio = 当前频率 / 标称频率
+cpu_health(node) = max(busy 加权, runq 归一, 1 − freq_ratio)
+```
+
+只看 busy 会漏两种情况：超线程兄弟核互相争抢（两个核都显示 50%，吞吐远不到两倍）、
+以及降频。run-queue 延迟同时覆盖这两者，是 CPU 侧信息量最大的单一指标。
+
+**PSI 的粒度坑**：PSI 没有 per-NUMA 维度，`/proc/pressure/*` 是全机的、cgroup PSI 是
+按 cgroup 的。节点级压力只能用「落在该节点上的 VM scope 的 PSI 按 vCPU 数加权」合成
+（口径同 §3.10.3 的 oc）。
+
+**合成位置**：健康分在**宿主机代理侧**算（它手里有全部原始数据），随
+`placement_status` 一次返回给页面，避免前端为一根监控条发六条 PromQL；指标本身照常
+导出，供时序库、Grafana 与告警使用。
+
+### 6.2 展示形态
+
+三块，由粗到细：
+
+| 视图 | 内容 | 回答 |
+|---|---|---|
+| **节点监控条** | 每 NUMA 一行，CPU 忙比 / 内存用量 / 远端访存 / 分配溢出 / 回收活动并排画成小刻度条，超阈值变色，右侧给合成健康分 | 哪个节点、哪个维度出问题 |
+| **CPU 热力图** | 即现有拓扑板。填充高度 = 忙比；建议加第二通道：边框颜色 = run-queue 延迟等级 | 忙比高但队列不堵 = 健康满载；忙比高且队列堵 = 真过载 |
+| **虚拟机 NUMA 分布** | 每台 VM 一行，两段条：vCPU 落点分布 与 内存落点分布。两段不对齐即跨节点访存；按远端比例降序排 | 谁在跨节点访存，迁移候选清单 |
+
+这三块与 §3.10 的自动放置闭环：目标函数里的 `remote_mem_ratio` 从 `numa_maps` 估计
+换成实测值（有 RDT 时更准——它反映**实际被访问**的比例，而非**驻留**比例；冷页留在
+远端其实无害，按页数估会高估代价），并给目标函数补一项节点健康惩罚，让求解器主动
+避开带宽饱和或正在回收的节点，而不只看容量放得下。
+
 ---
 
 ## §7 分期实施
@@ -865,3 +960,22 @@ SPDK 部分（§3.8 结论）同步落地：plan 的 `pools.spdk.cap` 声明候�
 ### §9.2 已知差异（后续补）
 
 内存板的 OS/虚拟化预留是主机级字段，按主机级条拖动，不做逐节点手柄；ferrovirt 侧浮动 VM 的跨节点内存分布在未接入 `numastat` 采集前按节点数均分估算（agent 控制器已用 `numa_maps` 实测）；`x-memdev-rebind` 未做，vNUMA VM 强制固定、只在启动时落位；求解器目前是贪心装箱 + 稳定性偏置，§3.10.2 的局部搜索（两两交换）未实现——VM 数在百量级时贪心解已足够接近，后续可按 Cost 增量加一轮交换；打包侧需在 `build-deb-xvirt` 为 hyper-agent 加 `xvirt-resource-plan` 入口与单元安装（见 xvirt 仓）。
+
+### §9.3 NUMA 可观测性第一档（2026-09-14）
+
+按 §6.1 / §6.2 落地，全部零新依赖：
+
+| 组件 | 内容 |
+|---|---|
+| 宿主机代理 `placement.py` | `vcpu_cpus()`（线程名 `CPU n/KVM` + `processor` 字段，实测 vcpu→CPU）、`vcpu_node_counts()`、`remote_mem_ratio()`（按 vCPU 数加权，无数据返回 None）、`read_node_counters()` / `read_node_distance()`、`HealthSampler`（numastat / node vmstat / per-CPU jiffies 的两次采样差分出速率）、`node_health()`（纯函数，五分量取 max，None 不参与） |
+| 宿主机代理 collector | `xvirt_vm_numa_bytes` / `_vcpu_cpu` / `_vcpu_node` / `_remote_mem_ratio`、`xvirt_node_numastat` / `_vmstat` / `_distance`、`xvirt_node_health_score` / `_component` / `_level`。复用控制器带 3s 缓存的快照，不重复扫 sysfs |
+| 宿主机代理 `placement_status` | 返回加 `health`（每节点分量与等级）、`distance`，每台 VM 加 `vcpu_cpus` / `vcpu_nodes` / `remote_mem_ratio` |
+| 管理服务 | PromQL 标签白名单放行 `vcpu / from / to / part / level` |
+| Web 控制台 `NodeHealthBoard.jsx` | 节点监控条（五分量小刻度条 + 合成健康分 + 最差项）、NUMA 距离矩阵（>1 节点才显示）、虚拟机 NUMA 分布（vCPU 落点条 + 内存落点条，按远端访存降序，最上面即迁移候选） |
+
+本机（单 NUMA 虚拟机）验证了采集与合成链路；两节点以上的分布与距离矩阵需真机验证。
+单测 `tests/test_placement.py` 增至 25 例，新增 9 例覆盖 vCPU 归节点、远端比例的四种
+情形、健康分的取最大值 / 分级 / 归一化 / 空值不污染。
+
+第二档（裸机频率与节流）与第三档（RDT MBM、uncore IMC、CPI、eBPF runqlat）未做，
+指标名与判据已在 §6.1 定义好，接上即可。
