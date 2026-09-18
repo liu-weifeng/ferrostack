@@ -1,12 +1,13 @@
-# xvirt 资源规划：CPU / 内存隔离与预留方案（v1 草案）
+# xvirt 资源规划：CPU / 内存隔离与预留方案
 
 > 为 xvirt 设计主机级 CPU、内存的隔离与预留能力：把操作系统（内核 + 系统服务）、
 > 虚拟化服务、SPDK、虚拟机划分为可视、可拖拽调整的资源池；覆盖 NUMA 拓扑、
-> 内存大页与内存分层（memtier）的展示与管控。
+> 内存大页与内存分层（memtier）的展示与管控；自动放置控制器在主机负载变化时
+> 在线求最优绑定。
 >
-> 2026-09-01 · 生产内核 6.7（cgroup v2 / cpuset isolated 分区可用）
+> 2026-09-01 初稿 · 2026-09-18 对齐代码实况 · 生产内核 6.7（cgroup v2 / cpuset isolated 分区可用）
 > · 涉及 ferrovirt / hyper-agent / lictor / xvirt-client
-> · 可视化版本（含页面 mockup）：https://claude.ai/code/artifact/4fcb9c64-0910-462c-9601-5bae73f9fff6
+> · 可视化版本（含页面 mockup）：https://claude.ai/artifact/ArW5MzLMyKkBagVysdZJYD
 > · 可交互页面原型（独立 demo，不依赖 xvirt-client）：`demo/resource-plan/index.html`（见同目录 README）
 > · 依据：CLAUDE.md 组件速查、`memory-tiering.md`、`qemu-memtier-usage.md`、
 >   `vm-direct-metrics-design.md`、`monitoring/README.md`
@@ -17,21 +18,23 @@
 
 一句话：**以 cgroup v2 cpuset 分区为唯一基础机制做运行时可调的 CPU/内存池化，
 每台 VM 落入独立 systemd scope；隔离、预留、大页、NUMA、SPDK、memtier 统一收进
-一份 per-host「资源规划（resource plan）」，由 hyper-agent 幂等对账落地，前端在
-主机详情新增「资源规划」tab 做图形化展示与拖拽编辑。**
+一份 per-host「资源规划（resource plan）」，由 hyper-agent 幂等对账落地；自动放置
+控制器按负载档位在线调整未锁定 VM 的绑定；前端在主机详情新增「资源规划」tab 做
+图形化展示与拖拽编辑。**
 
 | 问题 | 决策 | 理由 |
 |---|---|---|
 | CPU 隔离用什么 | **cgroup v2 cpuset 分区**（`cpuset.cpus.partition`），不以 `isolcpus` 为基础机制 | isolcpus 需重启、静态、全有全无；内核 6.7 的 `isolated` 分区在运行时提供等效隔离（脱离调度域、无负载均衡），正好支撑「拖拽即生效」 |
-| SPDK 轮询核 | cpuset `isolated` 分区 + IRQ 驱离；可选 `nohz_full` 启动参数档位（标「需重启」） | 轮询线程要独占核、免时钟/中断干扰；isolated 分区覆盖 90% 需求，极致低抖动才需要 boot profile |
-| per-VM 资源边界 | **systemd transient scope**：`xvirt-vm-<uuid>.scope` 挂 `xvirt-machine.slice` | 目前全部 QEMU 挤在 xvirt-lictor.service 的 cgroup 里（KillMode=process 的副作用），无法逐 VM 计量/限额；scope 顺带让 QEMU 生命周期独立于 lictor 重启 |
+| SPDK 轮询核 | cpuset `isolated` 分区 + 可迁移 IRQ 驱离 + unbound workqueue cpumask 排除；managed IRQ（NVMe/mlx5）只能靠 `isolcpus=managed_irq`，与 `nohz_full` 一起归入「低抖动启动档」（标「需重启」） | 轮询线程要独占核、免时钟/中断干扰；isolated 分区覆盖 90% 需求，极致低抖动才需要 boot profile |
+| per-VM 资源边界 | **systemd transient scope**：`vm-<uuid>.scope` 挂 `machine.slice`，QEMU 经 `systemd-run --scope` **在 exec 之前**就落入 scope | 目前全部 QEMU 挤在 `xvirt-lictor.service` 的 cgroup 里（KillMode=process 的副作用），无法逐 VM 计量/限额；先起进程再搬会让 prealloc 的内存与大页永久计费到旧 cgroup（§3.3）；scope 顺带让 QEMU 生命周期独立于 lictor 重启 |
 | vCPU 绑定 | scope 级 `cpuset` 定池 + QMP `query-cpus-fast` 拿线程 id 后 `sched_setaffinity` 做 1:1 独占绑定 | 池归属用 cgroup（可整体挪），精确 pin 用线程亲和性；两层正交 |
-| 内存预留 | `memory.min` 保护 OS / 虚拟化服务 /（P4）VM 热集；`xvirt-machine.slice` 用 `memory.high` 做 VM 池软预算 | min 挡住回收保住预留；VM 池不用 `memory.max` 硬顶——顶穿会触发 OOM 杀 QEMU，软限 + memtier 下刷更安全 |
+| 内存预留 | `memory.min` 保护 OS / 虚拟化服务 /（P4）VM 热集；`machine.slice` 用 `memory.high` 做 VM 池软预算，再以 `memory.max` 兜底 + 每 scope `memory.oom.group=1` | min 只保护已驻留页、不预扣内存；VM 匿名页在无 swap 主机上不可回收，`high` 只能节流不能阻止超限，没有 `max` 时预留会被吃穿、最后是全局 OOM 随机杀。`max` 取「MemTotal − 各项预留 − 大页 − 余量」，只在主机本来就要 OOM 的点上把代价收敛成「杀一台 VM」 |
 | 大页 | per-NUMA sysfs 运行时分配（2M 常态可行）；1G 走启动参数/开机早期预留，UI 标「需重启生效」；`hugetlb` cgroup 圈 SPDK 与 VM 的用量 | 1G 页在内存碎片化后运行时分配基本必失败 |
-| VM NUMA 落位 | `memory-backend-*,host-nodes=N,policy=bind` + `-numa node,memdev` 建 vNUMA；scope 的 `cpuset.mems` 兜底 | QEMU 原生机制；单节点 VM 自动放置，跨节点 VM 显式声明 vNUMA |
-| memtier 关系 | 仅「匿名内存」后端模式的 VM 可开启（现状约束）；主机总控的水位线/预算改从 resource plan 读取并在 UI 暴露 | memtier 强制 4K 匿名页，与大页、vhost-user（petrel/SPDK）共享内存互斥；总控现在的阈值是环境变量常量，应归入规划统一管理 |
+| VM NUMA 落位 | 三态：**浮动**（默认，不绑核不绑 NUMA，跑在未预留资源上）/ 绑定单节点（只用 scope 的 `cpuset.mems`，QEMU 不带 `host-nodes`）/ 显式 vNUMA（`-numa node,memdev`，per-memdev `host-nodes`） | 与现状兼容（今天所有 VM 都是浮动）；需要亲和的 VM 再显式绑 |
+| 动态自动绑定 / 在线调整 | 主机级放置控制器（§3.10）：启动时按余量给 A 独占 / B 节点共享 / C 浮动；运行中靠 scope 的 `AllowedCPUs`（即时）+ `sched_setaffinity`（即时）+ `AllowedMemoryNodes`（cgroup v2 写 `cpuset.mems` 触发内核异步迁页）在线搬 vCPU 与内存 | 不需 QEMU/guest 配合、6.7 原生；与 libvirt `numatune --live` 同机制；用户显式放置永不被动 |
+| memtier 关系 | 仅「匿名内存」后端模式的 VM 可开启（现状约束）；主机总控的水位线/预算改从 resource plan 读取并在 UI 暴露 | memtier 强制 4K 匿名页，与大页、vhost-user（petrel/SPDK）共享内存互斥；总控原先的阈值是环境变量常量，应归入规划统一管理 |
 | 前端形态 | 主机详情新 tab「资源规划」：查看模式实时叠加用量，编辑模式草稿 → 校验 → 异步任务应用 | 沿用既有 TaskManager / WS / i18n 约定 |
-| 数据链路 | 配置走新 REST（plan API + 本地缓存对账）；用量走既有 hyper-agent exporter :9101 → VictoriaMetrics → ferrovirt 指标代理 | 监控链路已建成，补 collector 即可；顺带落地 `vm-direct-metrics-design.md` 里搁置的 per-VM cgroup 直采 |
+| 数据链路 | 配置走新 REST（plan API + 本地缓存对账）；用量走既有 hyper-agent exporter :9101 → vmagent → VictoriaMetrics → ferrovirt 指标代理 | 监控链路已建成，补 collector 即可；顺带落地 `vm-direct-metrics-design.md` 里搁置的 per-VM cgroup 直采 |
 
 ---
 
@@ -39,17 +42,18 @@
 
 ### 目标
 
-- **隔离**：OS（内核 + 系统服务）、虚拟化服务（ferrovirt/hyper-agent/lictor/petrel/mariadb/nginx 等）、SPDK、虚拟机四类负载互不侵占 CPU；SPDK 核完全独占。
+- **隔离**：OS（内核 + 系统服务）、虚拟化服务（ferrovirt/hyper-agent/lictor/conciliumd/petrel/mariadb/nginx 等）、SPDK、虚拟机四类负载互不侵占 CPU；SPDK 核完全独占。
 - **预留**：OS 与虚拟化服务的内存有硬保障（不被 VM 压力回收挤死）；大页按 NUMA 节点、按页大小（2M/1G）定量预留；SPDK 的核与大页单独圈占。
 - **可视**：主机 NUMA 拓扑、每个逻辑 CPU 的池归属与实时利用率、每 NUMA 节点内存的分段构成（内核/预留/大页/VM/空闲）、每台 VM 的占用与放置、memtier 常驻/换出/后端盘用量，全部图形化。
 - **可拖拽**：核心 → 池、VM → 核（独占绑定）、内存段边界手柄，都可拖拽调整；所有操作有非拖拽等价入口（右键菜单/输入框）。
+- **自动**：未被用户锁定的 VM 由放置控制器按主机负载在线求最优绑定（§3.10），负载低时拿独占核，VM 变多时在线降级，减少时再升回去。
 - **可对账**：规划持久化于 DB + 主机本地缓存，重启后由 hyper-agent 先于 VM 启动幂等重放。
 
 ### 非目标（本期不做）
 
 - 集群级调度联动（放置时感知各 host 池余量）——plan 是 per-host 对象，center 侧先做逐主机入口，聚合视图后续。
 - SPDK 本体的部署编排（bdev/vhost target 配置）——本期只做**资源预留与展示**，把核和大页圈出来。
-- CPU 时间片精细 QoS（cpu.max 配额、实时调度类）——先池化，配额留作后续旋钮。
+- CPU 时间片精细 QoS（`cpu.max` 配额、实时调度类）——先池化，配额留作后续旋钮。
 
 ---
 
@@ -63,10 +67,16 @@ slice 的 `cpuset`（§3.2）：
 | 池 | 承载 | 隔离强度 | 默认规模建议 |
 |---|---|---|---|
 | **system**（OS） | 内核杂务、sshd、systemd、journald 等 `system.slice`/`user.slice`/`init.scope` | 软边界（cpuset 圈定，不隔离调度域） | ≥2C（≥64C 主机取 4C） |
-| **virt**（虚拟化服务） | `xvirt.slice`：ferrovirt / hyper-agent / lictor / conciliumd / petrel 守护 / mariadb / nginx / websockify / OVS 用户态 | 软边界 | 2–4C，跑 petrel OSD 的节点加大 |
+| **virt**（虚拟化服务） | `virt.slice`：ferrovirt / hyper-agent / lictor / conciliumd / petrel 守护 / mariadb / nginx / websockify / OVS 用户态 | 软边界 | 2–4C，跑 petrel OSD 的节点加大 |
 | **spdk** | `spdk.slice`（reactor 轮询线程） | **isolated 分区**：脱离调度域 + IRQ 驱离 | 按 vhost 目标带宽定，1–4C 起步；未部署 SPDK 时池可为空 |
-| **vm-shared**（VM 共享） | `xvirt-machine.slice` 下未独占的 VM scope（vCPU 超分调度于此） | 软边界 + per-VM `cpu.weight` | 其余全部 |
-| **vm-dedicated**（VM 独占） | 被某台 VM 1:1 绑定的核（vCPU 线程 pin），从 vm-shared 中划出 | 逻辑独占（同池内不共享）；可选升级为 isolated 分区 | 按需 |
+| **vm-shared**（VM 共享 = **未预留资源**） | `machine.slice` 下未独占的 VM scope。它是**残差池**：system / virt / spdk / dedicated 之外的全部核自动归此，不需要（也不能）单独「分配」——把核从别的池释放即回到这里 | 软边界 + per-VM `cpu.weight` | 其余全部 |
+| **vm-dedicated**（VM 独占） | 被某台 VM 1:1 绑定的核（vCPU 线程 pin），从 vm-shared 中划出 | 逻辑独占（同池内不共享）；可选升级为 isolated 子分区（前提：`machine.slice` 自身先写 `cpuset.cpus.partition=root` 成为有效分区根，子 scope 才能写 `isolated`） | 按需 |
+
+> **浮动 VM（floating）**：不绑核、不绑 NUMA 的虚拟机——即今天系统里所有 VM 的形态。
+> 它们与做了预留/绑定的 VM **长期共存**：调度范围 = vm-shared 全部线程（两节点），
+> 内存来自各节点扣除内核·预留·大页后的 VM 池余量，落点由内核 first-touch 决定、
+> 可能跨节点。规划页面必须把这一类单独呈现（台数 / Σ vCPU / 共享池线程 / 超分比、
+> 内存条上的实测跨节点分布），缩共享池时按它们的规格和超分比校验（§4.4）。
 
 > **超线程配对约束**：分池以**物理核**为最小拖拽单元（一对 HT 同进同出）。跨池
 > 共享同一物理核的两个 HT 会让「隔离」名存实亡；SPDK/独占池尤其如此。UI 上 HT
@@ -81,10 +91,10 @@ slice 的 `cpuset`（§3.2）：
 |---|---|---|---|
 | 内核 / 其它 | Slab、页表、vmalloc、per-CPU、内核线程等不可归户部分 | `/proc/meminfo` 与 node meminfo 差额 | 不可配置，仅展示 |
 | OS 预留 | system.slice + user.slice 的保障额 | 规划值 vs `memory.current` | `memory.min` |
-| 虚拟化服务预留 | xvirt.slice 保障额（mariadb 是大头） | 同上 | `memory.min` |
+| 虚拟化服务预留 | virt.slice 保障额（mariadb 是大头） | 同上 | `memory.min` |
 | 大页 2M / 1G | 预留的 HugeTLB 池（含 SPDK 圈占部分，单列） | `node*/hugepages/*/nr_hugepages,free_hugepages` | sysfs per-node 写入；hugetlb cgroup 圈用量 |
-| VM 池 | machine.slice 预算：已用（各 VM `memory.current` 之和）+ 余量 | cgroup + 规划值 | `memory.high`（软） |
-| memtier 视图 | VM 池内叠加显示：Σ常驻 vs Σ已换出（换出部分**不占**本节点内存，是「借出去」的量）+ 后端盘水位 | lictor `memtier_query` 聚合 | 总控水位线（§3.7） |
+| VM 池 | machine.slice 预算：已用（各 VM `memory.current` 之和）+ 余量 | cgroup + 规划值 | `memory.high`（软）+ `memory.max`（兜底） |
+| memtier 视图 | VM 池内叠加显示：Σ常驻 vs Σ已换出（换出部分**不占**本节点内存，是「借出去」的量）+ 后端盘水位 | lictor `x-memtier-query` 聚合 | 总控水位线（§3.7） |
 | 空闲 / 页缓存 | MemAvailable 口径其余部分 | `/proc/meminfo` | — |
 
 ### 2.3 VM 内存后端三模式（关键兼容矩阵）
@@ -131,24 +141,36 @@ xvirt-init 写 grub drop-in，UI 标「需重启」）。
 ├── init.scope                AllowedCPUs=<system 池>
 ├── system.slice              AllowedCPUs=<system 池>   memory.min=<OS 预留>
 ├── user.slice                AllowedCPUs=<system 池>
-├── xvirt.slice               AllowedCPUs=<virt 池>     memory.min=<虚拟化服务预留>
+├── virt.slice                AllowedCPUs=<virt 池>     memory.min=<虚拟化服务预留>
 │   ├── xvirt-ferrovirt.service / xvirt-hyper-agent.service / xvirt-lictor.service
-│   ├── conciliumd.service / mariadb.service / nginx.service   ← 用 drop-in Slice=xvirt.slice 归入
+│   ├── conciliumd.service / mariadb.service / nginx.service   ← 用 drop-in Slice=virt.slice 归入
 │   └── xvirt-petrel-*.scope        ← petrel 守护（hyper-agent 托管时以 scope 拉起）
 ├── spdk.slice                AllowedCPUs=<spdk 池>
 │   │                         cpuset.cpus.partition=isolated   ← agent 直写 cgroupfs
 │   └── spdk-vhost.service（后续）
-└── xvirt-machine.slice       AllowedCPUs=<vm-shared ∪ vm-dedicated>
-    │                         memory.high=<VM 池预算>
-    ├── xvirt-vm-<uuidA>.scope    cpuset=共享池        cpu.weight=100
-    └── xvirt-vm-<uuidB>.scope    cpuset=独占核集合    cpu.weight=10000  (memory.min 可选)
+└── machine.slice             AllowedCPUs=<vm-shared ∪ vm-dedicated>
+    │                         memory.high=<VM 池预算>  memory.max=<VM 池硬顶，§3.4>
+    │                         memory.min=Σ 子 scope 的 memory.min（层级分配，否则子项 min 无效）
+    ├── machine-shared.slice  不设 AllowedCPUs 之外的属性；C 级（浮动）scope 挂这里，
+    │   │                     AllowedCPUs=<vm-shared>，缩共享池只改这一处
+    │   └── vm-<uuidA>.scope  继承 cpuset      cpu.weight=100     memory.oom.group=1
+    └── vm-<uuidB>.scope      cpuset=独占核集合  cpu.weight=10000   memory.oom.group=1
+                              (A/B 级逐 scope 显式设 AllowedCPUs / AllowedMemoryNodes；memory.min 可选)
 ```
 
-- **isolated 分区的前提**：内核要求分区的 CPU 不与兄弟 cgroup 重叠——所以 agent
-  必须给**所有**顶层 slice（含 `init.scope`/`user.slice`）显式设 `AllowedCPUs`，
-  这正是「全量池化」天然满足的条件。
+- **isolated 分区的前提**：内核要求分区的 CPU 不与**已配置** `cpuset.cpus` 的兄弟
+  cgroup 重叠（未设值的兄弟不构成冲突）。给所有顶层 slice（含 `init.scope`/`user.slice`）
+  显式设 `AllowedCPUs` 是充分条件而非内核要求，「全量池化」天然满足；反过来对账时
+  要扫根下**全部**子 cgroup（含临时 scope、容器运行时建的组），不能只查已知的几个 slice。
+  写入失败不返回 EINVAL：写成功但回读 `cpuset.cpus.partition` 为 `isolated invalid (<原因>)`，
+  原因字符串可直接上报（如 `Cpu list in cpuset.cpus not exclusive`）。
+- **共享池变更的扇出**：浮动（C 级）scope 挂 `machine-shared.slice` 且不设自己的
+  AllowedCPUs，直接继承，缩共享池一次写入即可；A/B 级 scope 仍逐个显式设。
+- **memory.min 的层级约束**：cgroup v2 的 min 保护按层级分配——子 scope 的
+  `memory.min` 只有在父 `machine.slice` 自身设了 ≥ Σ 子项的 `memory.min` 时才有效。
+  控制器在增删任一 scope 的 min 时同步改写 `machine.slice` 的 min（§3.7 P4 依赖此）。
 - **归并系统服务**：mariadb/nginx 等属于虚拟化平台的服务用 drop-in
-  `Slice=xvirt.slice` 归入 virt 池——「虚拟化系统占用」在页面上才是一条完整、
+  `Slice=virt.slice` 归入 virt 池——「虚拟化系统占用」在页面上才是一条完整、
   诚实的曲线。
 - **下发方式**：`systemctl set-property`（运行时 + 自动落 drop-in 持久化）设
   AllowedCPUs / memory.\*；`cpuset.cpus.partition`、hugetlb 上限等 systemd 不覆盖
@@ -162,41 +184,62 @@ cgroup；服务重启靠 `KillMode=process` 保命。后果：无法逐 VM 计�
 
 **改造**（lictor `launch_vm`）：
 
-1. QEMU 以 `-S`（暂停）拉起；
-2. 经 D-Bus `StartTransientUnit("xvirt-vm-<uuid>.scope", pids=[qemu_pid],
-   Slice="xvirt-machine.slice", Delegate=true, CPUWeight/MemoryMin=…)` 把进程移入
-   独立 scope（libvirt 同款做法；不用 `systemd-run --scope` 包一层，避免改变
-   父子关系）；
-3. 按放置配置设 scope 的 `AllowedCPUs`/`AllowedMemoryNodes`；独占 VM 再经 QMP
-   `query-cpus-fast` 取 vCPU 线程 id，逐线程 `sched_setaffinity` 1:1 绑核；
+1. **在 exec 之前就落入 scope**：`systemd-run --scope --unit=vm-<uuid> --slice=machine.slice`
+   （C 级为 `machine-shared.slice`）`-p Delegate=yes -p CPUWeight=… [-p AllowedCPUs=…
+   -p AllowedMemoryNodes=… -p MemoryMin=…] -p ManagedOOMPreference=none -- setsid --fork qemu … -S`。
+   不能「先起进程再 `StartTransientUnit` 搬 pid」：模式 B/C 的 `prealloc=on` 在 `-S`
+   暂停点之前就完成全部内存分配，搬 pid 不搬已计费的页，`memory.current` 会永久偏低、
+   `hugetlb.*.max` 对这台 VM 完全失效——这不是一次性的存量问题，每次开机都会发生。
+   lictor 今天已是 `setsid --fork` 双 fork 拉起，父子关系本就断开，`systemd-run`
+   包一层不改变任何既有语义；
+2. lictor 拿到的 Popen 句柄是 `setsid`/`systemd-run` 自身，**真实 QEMU pid 从
+   pidfile（`-pidfile`）或 QMP 取**，后续 numa_maps / 线程 id 一律用该 pid；
+3. 独占 VM 经 QMP `query-cpus-fast` 取 vCPU 线程 id，逐线程 `sched_setaffinity`
+   1:1 绑核；scope 上再写 `memory.oom.group=1`（systemd 不覆盖，直写 cgroupfs）；
 4. QMP `cont` 放行。
+5. **模式 B 强制 `prealloc=on`**：共享 memfd 的 shmem 页计费到首次触碰者，若 petrel
+   后端先于 QEMU 触碰，页会记到 `virt.slice`、吃掉虚拟化预留。
+6. **顺带收益**：QEMU 不再住 service cgroup，lictor/hyper-agent 重启天然不波及 VM，
+   `KillMode=process` 从「保命 hack」降级为双保险。
+7. **存量迁移**：升级后对账把运行中 QEMU 的 pid 写入新建 scope 即可（cgroup v2 允许
+   迁移）；注意已计费的匿名页仍挂在旧 cgroup，`memory.current` 要到页面重新 fault
+   后才逐步归位——统计初期偏低是预期行为，标注即可，或选择「下次 VM 重启时生效」。
+8. **emulator/iothread 分离**（P2 可选）：scope 开 `Delegate=yes` 后建 threaded 子组
+   `vcpu/` 与 `emulator/`，独占 VM 的模拟器线程可留在共享池，进一步降低独占核抖动。
 
-- **顺带收益**：QEMU 不再住 service cgroup，lictor/hyper-agent 重启天然不波及 VM，
-  `KillMode=process` 从「保命 hack」降级为双保险。
-- **存量迁移**：升级后对账把运行中 QEMU 的 pid 写入新建 scope 即可（cgroup v2 允许
-  迁移）；注意已计费的匿名页仍挂在旧 cgroup，`memory.current` 要到页面重新 fault
-  后才逐步归位——统计初期偏低是预期行为，标注即可，或选择「下次 VM 重启时生效」。
-- **emulator/iothread 分离**（P2 可选）：scope 开 `Delegate=yes` 后建 threaded 子组
-  `vcpu/` 与 `emulator/`，独占 VM 的模拟器线程可留在共享池，进一步降低独占核抖动。
+> scope 建立失败**降级为不带 scope 启动**并 warn（保证 VM 能开机），其余放置步骤
+> 失败只 warn；启动前清掉同名残留 scope（上次异常退出留下的 failed/inactive 单元）。
 
 ### 3.4 内存预留与 VM 池预算
 
 ```
-# 预算恒等式（per host，规划器强制）：
-MemTotal = 内核残差(实测)
-         + OS 预留(memory.min@system.slice)
-         + 虚拟化服务预留(memory.min@xvirt.slice)
-         + Σ 大页池(2M+1G，含 SPDK 圈占)
-         + VM 池预算(memory.high@xvirt-machine.slice)
-         + 安全余量(≥ 4% MemTotal)
+# 预算不等式（per host，规划器校验；内核不强制，见下）：
+OS 预留(memory.min@system.slice)
+ + 虚拟化服务预留(memory.min@virt.slice)
+ + Σ 大页池(2M+1G，含 SPDK 圈占)
+ + VM 池预算(memory.high@machine.slice)
+ ≤ MemTotal − 内核残差观测峰值 − 安全余量(≥ 4% MemTotal)
+
+memory.max@machine.slice = MemTotal − OS 预留 − 虚拟化服务预留 − Σ 大页池 − 安全余量
 ```
 
 - `memory.min` 是「预留」的落地：VM 压力触发全局回收时，受保护 slice 的页不被
-  扫描——OS 与虚拟化服务由此拿到硬保障。前提：根上 `subtree_control` 启用 memory
-  控制器（systemd 默认满足，agent 对账时校验）。
-- VM 池用 `memory.high` 不用 `memory.max`：顶到 high 触发直接回收 + 节流，给
-  memtier 总控留出下刷窗口；hard max 顶穿会 OOM-kill QEMU，代价不对称。
-- VM 池预算校验规则：`Σ(运行中非 memtier VM 内存 × (1+overhead)) ≤ 预算`；
+  扫描。**但 min 不预扣内存，只保护已驻留页**：系统服务事后增长的部分要从别处回收，
+  而模式 A（未开 memtier）与模式 B 的匿名/shmem 页在无 swap 主机上**不可回收**，
+  `memory.high` 此时只能节流、不能阻止超限，最后是全局 OOM 随机杀进程——所以上面的
+  预算式只是校验器约定，内核并不替你守住它。前提：根上 `subtree_control` 启用
+  memory 控制器（systemd 默认满足，agent 对账时校验）。
+- 内核残差是实测且波动的量，校验器按「Σ 规划项 ≤ MemTotal − 观测残差峰值 − 余量」
+  实现（残差峰值取 exporter 近 7 天最大值，首次取当前值 × 1.2）。
+- VM 池：`memory.high` 做软预算（顶到 high 触发直接回收 + 节流，给 memtier 总控留
+  下刷窗口），再以 `memory.max` **兜底**——取「MemTotal − 各项预留 − 大页 − 余量」，
+  它只在主机本来就要 OOM 的那个点上生效，配合每个 scope `memory.oom.group=1`，把
+  最坏情况从「随机杀进程」收敛成「整台杀一个 VM」（杀谁由 `memory.oom.group` +
+  oom_score_adj 按优先级映射决定）。
+- **hugetlb 不计入 `memory.current`**：6.7 上 `memory_hugetlb_accounting` 挂载选项
+  默认关闭，模式 C 的主内存走 `hugetlb.*` 控制器、不进 memory 控制器——VM 池校验与
+  `memory.high/max` 只算模式 C VM 的 QEMU overhead，其主内存在大页池段核算。
+- VM 池预算校验规则：`Σ(运行中非 memtier VM 内存 × (1+overhead)，模式 C 只算 overhead) ≤ 预算`；
   memtier VM 按 `min-resident` 折算下限、按全额折算上限，两条线都在 UI 显示
   （「保证线 / 超分线」）。QEMU per-VM overhead 取 `3% + 300MB` 经验值，进规划器常量。
 
@@ -208,7 +251,12 @@ MemTotal = 内核残差(实测)
   分配，不足额则该项标「需重启」，由开机早期单元（`xvirt-resource-plan.service`，
   §3.9）在 boot 早期补齐，兜底方案才是 grub `hugepagesz=1G hugepages=N`。
 - **圈占**：SPDK 与 VM 共用 HugeTLB 池但通过 `hugetlb.2MB.max` / `hugetlb.1GB.max`
-  在 `spdk.slice` 与 `xvirt-machine.slice` 上互相设限，防一方吃光另一方的预留。
+  在 `spdk.slice` 与 `machine.slice` 上互相设限，防一方吃光另一方的预留。SPDK 走
+  mmap 预留，`.max` 与 `.rsvd.max` 要**一起设**（前者管 fault 时的计费，后者管
+  mmap 时的预留计费）。
+- **控制器要手工开**：systemd 不会在根 `cgroup.subtree_control` 里启用 `hugetlb`，
+  开机对账单元（§3.9）负责写 `+hugetlb`（根与 `machine.slice`/`spdk.slice` 逐层），
+  agent 对账时校验。
 - **消费**：模式 C VM 用 `memory-backend-memfd,hugetlb=on,hugetlbsize=2M|1G,share=on,prealloc=on`
   （免 hugetlbfs 挂载点管理）；SPDK 用其自带 `--huge-dir/--mem-size`。
 
@@ -218,10 +266,20 @@ MemTotal = 内核残差(实测)
   `/sys/devices/system/cpu/cpu*/topology/*`（socket/core/thread 配对）+
   `/sys/devices/system/node/node*/`（cpulist、meminfo、hugepages、`distance` 矩阵）。
   落 ferrovirt 新表（§4.1），供拓扑图渲染。
-- **单节点 VM（默认，自动）**：放置器选「绑定池核数与空闲内存都放得下」的最空节点；
-  QEMU 加 `-object memory-backend-ram,host-nodes=N,policy=bind`（模式 B/C 用对应
-  backend）+ scope `AllowedMemoryNodes=N`，vCPU 绑该节点池内核。
-- **跨节点 VM（显式 vNUMA）**：`vm_config.numa` 声明 vnode 列表（每 vnode：vcpus、
+- **浮动（默认，`numa_mode=none`）**：不绑 NUMA。scope `AllowedCPUs=<vm-shared>`、
+  `AllowedMemoryNodes=<全部节点>`，QEMU 不带 `host-nodes`；内存 first-touch，实际分布
+  由 `numastat -p <qemu pid>`（或 `/proc/<pid>/numa_maps` 聚合）采集后展示。与现状零差异，
+  升级后老 VM 自动落入此态。浮动 ↔ 绑定单节点可**热调**，但注意语义差别：只改
+  `AllowedCPUs` 不迁页；改 `AllowedMemoryNodes`（= `cpuset.mems`）在 cgroup v2 下
+  **必然触发全量异步迁页**（`memory_migrate` 恒开，§3.10.4），几十 GB 的 VM 会在
+  后台搬几十秒到几分钟——所以「绑定单节点」的热调必须走 §3.10.5 的标准流程并在
+  UI 显示进度，不能当成零成本操作。
+- **绑定单节点（`numa_mode=node`）**：放置器选「绑定池核数与空闲内存都放得下」的最空节点；
+  **只用 scope 的 `AllowedMemoryNodes=N`（`cpuset.mems`）**，QEMU **不带** `host-nodes`——
+  两套机制叠加是重复约束，换节点时还要依赖内核对 MPOL_BIND 做 nodes_remap 才能跟上，
+  多一层验证负担；`host-nodes` 只留给 vNUMA 的 per-memdev。vCPU 限该节点池内核（共享）
+  或 1:1 绑定（独占）。独占绑核而内存仍浮动是允许但要警告的组合（跨节点访存）。
+- **跨节点 VM（显式 vNUMA，`numa_mode=vnuma`）**：`vm_config.numa` 声明 vnode 列表（每 vnode：vcpus、
   内存、host-node），拼 `-numa node,nodeid=i,cpus=…,memdev=mi`，guest 内看到与宿主
   对齐的拓扑。页面 VM 详情画 vNUMA→host node 的映射关系。
 - **降级**：单 NUMA 主机（现有 lab 的 E5-26xx v3 单路）一切照常，页面只渲染一个节点组。
@@ -230,25 +288,56 @@ MemTotal = 内核残差(实测)
 
 - **准入**：`mem_backend=anon` 才可开 memtier（既有 petrel 互斥校验推广为三模式
   矩阵校验）。
-- **预算联动（P4）**：总控 `support/memtier/controller.py` 现在用
+- **预算联动**：总控 `support/memtier/controller.py` 原先用
   `XVIRT_MEMTIER_FREE_LOW_PCT/FREE_HIGH_PCT/PSI_HIGH` 环境变量常量算主机压力。改为
   从本地 plan 缓存读：压力 = `max(PSI 项, 预算项)`，预算项 = VM 池 `memory.current`
   相对 `memory.high` 的挤占度。下刷/回血两条水位线成为 plan 字段，UI 可调
   （memtier 面板上的两个刻度，§5.3）。
 - **热集保护（P4 可选）**：总控把每台 memtier VM 的 scope `memory.min` 同步为
-  `min-resident-mb + overhead`，防 VM 池整体回收把热集也挤掉。
+  `min-resident-mb + overhead`，防 VM 池整体回收把热集也挤掉。**同时**必须把
+  `machine.slice` 的 `memory.min` 维持为 Σ 子 scope min（§3.2），否则子项的 min 在
+  层级分配下为 0、保护无效。
 - **展示数据**：全部来自既有 `x-memtier-query`（经 lictor）：
   `resident-bytes / swapped-bytes / backing-total|used / evict-mbps / swapin-faults /
-  psi-some-avg10`，聚合进 exporter（§6）。
+  psi-some-avg10`，聚合进 exporter（§6.1）。
 
 ### 3.8 SPDK 预留
 
-- **本期交付**：plan 中的 `spdk` 块（核列表 + per-node 大页额度）→ agent 建
-  `spdk.slice`、写 isolated 分区、按额度校验大页池、写 irqbalance banned 清单
-  （`IRQBALANCE_BANNED_CPULIST` drop-in + 现存 IRQ 的 `smp_affinity_list` 改写驱离）。
+- **本期交付**：plan 中的 `spdk` 块（核列表 + 候选核上限 + per-node 大页额度）→ agent 建
+  `spdk.slice`、写 isolated 分区、按额度校验大页池、驱离 IRQ 与 unbound workqueue：
+  - 现存可迁移 IRQ 逐个改写 `smp_affinity_list`；irqbalance **未必安装**，agent 不依赖
+    它，装了才补 `IRQBALANCE_BANNED_CPULIST` drop-in 防它改回来；
+  - 6.7 的 isolated 分区**不会**把 CPU 从 unbound workqueue 的 cpumask 里摘掉
+    （6.9 才有），agent 同时写 `/sys/devices/virtual/workqueue/cpumask` 排除 spdk 核；
+  - NVMe、mlx5 等 **managed IRQ** 无法通过 `smp_affinity_list` 改绑（返回 EIO），
+    只能靠 `isolcpus=managed_irq,<spdk cpus>` 启动参数——归入「低抖动启动档」。
 - **后续接线**：SPDK vhost target 以 `spdk-vhost.service`（`Slice=spdk.slice`）部署，
   reactor mask = 池核；被服务 VM 走模式 C；reactor 是 100% 轮询，利用率图对 spdk 池
   改显示「占用/预留」而非 busy%（接 SPDK 自身 stats 后再显示有效利用率）。
+
+**SPDK 隔离方式的结论（cgroup 分区，而非 isolcpus）**：
+
+- **SPDK 不需要「绝对隔离」**。reactor 是用户态轮询线程，真正怕的是三件事：别的任务
+  抢核、IRQ 打断、HT 兄弟核干扰。isolated 分区（脱离调度域、独占）+ 整核成对划入 +
+  IRQ 驱离已覆盖这三件。残余只有周期 tick 与 per-CPU 内核线程：每核每秒数百次、每次
+  约 1–2 µs，占用 < 0.2%、抖动微秒级，对几十微秒量级的 IO 路径没有实际影响。
+- **isolcpus 做不到在线增减**：它是启动参数，改一次重启一次，且内核文档已标为
+  Deprecated、建议改用 cpuset；在「调度域隔离」这一层 isolated 分区与 `isolcpus=domain`
+  是同一件事，差别只剩 `nohz_full` / `rcu_nocbs` / `managed_irq` 这些只能启动时设的
+  项——归入可选的「低抖动启动档」，并且只声明 **SPDK 候选核上限**（如最多 8 核），
+  之后实际给多少核仍由 cgroup 在上限内动态决定；候选核暂时跑 VM 时多付少量
+  context-tracking 开销，故上限不宜划大。
+- **在线给 SPDK 加核（cgroup 层可行）**，固定顺序：从 `machine.slice` 的 cpuset 拿掉
+  这对 HT（VM 线程自动迁走）→ 写进 `spdk.slice` 的 cpuset（分区保持 isolated）→ 回读
+  `cpuset.cpus.partition` 确认不是 `isolated invalid` → 改写现存 IRQ 亲和性 +
+  irqbalance 禁用列表 + workqueue cpumask。managed IRQ 只在本核发起 IO 时才触发，核上
+  只有 SPDK 时不会响；SPDK 自己接管的 NVMe 走 vfio，没有内核 IRQ。
+- **真正的限制在 SPDK 进程层**：reactor 核集由启动时的 core mask 固定，运行中不能新增
+  reactor。两种做法：① 推荐——SPDK 启动时 reactor mask 覆盖候选核上限，开 dynamic
+  调度器让线程只落在需要的 reactor 上，cgroup 只把当前实际需要的核给 `spdk.slice`，
+  「加核」= cgroup 加核 + 调度器放开对应 reactor（需验证所用版本下空闲 reactor 是否真正
+  停止轮询，否则被内核挪到允许核上空转）；② 兜底——改 core mask 重启 vhost target，
+  依赖 inflight-shmfd 重连 + QEMU chardev `reconnect`，客户机不重启、仅短暂 IO 停顿。
 
 **IRQ 与内核线程的诚实口径**：
 
@@ -261,15 +350,190 @@ MemTotal = 内核残差(实测)
 ### 3.9 开机对账与应用顺序
 
 ```
-xvirt-resource-plan.service (oneshot, Before=xvirt-lictor.service)
+xvirt-resource-plan.service (oneshot, DefaultDependencies=no,
+                             After=local-fs.target systemd-sysctl.service,
+                             Before=sysinit.target xvirt-lictor.service xvirt-hyper-agent.service)
   读 /etc/xvirt/resource-plan.json（DB 之外的本地缓存，PUT plan 时同步写）
-  ① 1G/2M 大页早期投放（内存干净，成功率最高）
-  ② 顶层 slice AllowedCPUs / AllowedMemoryNodes / memory.min|high
-  ③ spdk.slice 建立 + partition=isolated + hugetlb 上限 + IRQ 驱离
-  ④ 标记就绪 → lictor 启动 → 逐 VM scope 放置（launch 时逐台施加）
+  ① 1G/2M 大页早期投放（越早内存越干净，成功率最高——因此要早于 sysinit.target）
+  ② 根 / machine.slice / spdk.slice 的 subtree_control +hugetlb；sysctl kernel.numa_balancing=0
+  ③ spdk.slice 建立 + partition=isolated + hugetlb .max/.rsvd.max 上限 + IRQ / workqueue 驱离
+  ④ 标记就绪 → petrel 守护、lictor 启动 → 逐 VM scope 放置（launch 时逐台施加）
+  注：顶层 slice 的 AllowedCPUs / AllowedMemoryNodes / memory.min|high|max 由
+  `set-property` 落的 drop-in 在开机时由 systemd 自己应用，本单元不重复写，只回读校验
+  对账失败不阻塞开机（SuccessExitStatus=0 1，失败只记日志）
 运行时 apply_resource_plan（异步任务）= 同一套幂等 reconcile，逐项返回
-  applied / pending-reboot / failed(原因)
+  applied / pending-reboot / failed(原因)；对账期间落 /run/xvirt/resource-plan.applying 标记
 ```
+
+---
+### 3.10 动态自动绑定与在线调整（放置控制器）
+
+目标：**用户在界面手动指定了 CPU 绑定 / NUMA / 内存预留的 VM 是「固定」的，永远不被
+自动改动；其余全部 VM 由控制器按主机当前负载在线求最优绑定——负载低时每台都拿到
+独占绑核 + 绑节点，VM 变多时在线降级、跨节点再平衡，VM 减少时再升回去。** 所有
+调整都在线完成（vCPU 即时、内存后台迁页，§3.10.4），不重启 VM。
+
+#### 3.10.1 两类 VM：固定与自动
+
+| 类别 | 谁决定 | 内容 | 控制器怎么对待 |
+|---|---|---|---|
+| **固定**（`placement_source=manual`） | 用户在 VM 视图显式设置，或点「锁定」 | CPU：独占核集合 / 绑定节点 / 浮动；内存：绑定节点或 vNUMA、`mem_reserved_mb`（scope `memory.min`）；后端模式 | **不可移动的约束**：它占的独占核、绑定节点上的内存与预留先从可用资源中扣除，求解只在剩余资源上进行 |
+| **自动**（`placement_source=auto`，默认） | 控制器 | 同上三个维度，由求解器在线赋值 | 每拍重新求最优，变更走在线原语 |
+
+强制固定（不给自动）的三类：显式 vNUMA（缺 per-memdev 迁移原语）、vfio 直通（页被
+pin 不可迁）、1G 大页后端（迁移慢且依赖目标节点空闲 1G 页）。用户改动自动 VM 的任一
+放置字段并保存 = 转为固定；「交回自动」则下一拍重新求解。固定 VM 的内存预留
+`memory.min` 同时进入 §3.4 的预算不等式，UI 在内存条上以实色标出。
+
+自动 VM 的可能形态就是三个等级：
+
+| 等级 | 含义 | 对应字段（§4.1） |
+|---|---|---|
+| **A · 独占** | vCPU 1:1 绑物理线程 + 内存绑同一节点 | `cpu_placement=dedicated, numa_mode=node` |
+| **B · 节点共享** | 不绑核，但限定在一个节点的共享池内 + 内存绑该节点，`cpu.weight` 按优先级 | `cpu_placement=shared, numa_mode=node` |
+| **C · 浮动** | 不绑核不绑 NUMA（§3.6 默认态） | `cpu_placement=shared, numa_mode=none` |
+
+#### 3.10.2 「最优」的定义：目标函数 + 负载档位
+
+**目标函数**（对自动 VM 集合求放置 P）：
+
+```
+Cost(P) = Σ_vm [ w_remote · remote_mem_ratio(vm)          // 跨节点访存比例（实测优先，目标为 0）
+              + w_cont   · contention(vm) ]                // 所在共享域的超分比 oc（独占 = 0）
+        + w_bal · |load(N0) − load(N1)|                    // 节点间 vCPU 与内存用量不均衡
+        + w_move · Σ_{vm 变更} move_cost(vm)               // 常驻内存 / 迁页带宽 + 冷却惩罚（滞回来源）
+约束：固定 VM 不动；每节点 Σ内存 ≤ VM 池预算；独占核两两不交且 HT 成对；
+      绑定后节点剩余共享线程 ≥ min_shared_threads；池边界 = plan 的共享池
+```
+
+`move_cost` 是避免抖动的核心：一个变更只有在「预计收益 ≥ 搬动成本 + 冷却惩罚」时才
+执行，因此负载短暂波动不会引发来回搬。权重有默认值，不在 UI 暴露；UI 暴露的是下面
+的档位阈值。
+
+**负载档位**让「最优」可预测、可解释。主机负载指数
+`L = max( 共享池 oc / bind_max_oc, VM 池内存用量比, PSI 归一化 )`，分三档，
+进入 / 退出阈值不同（滞回）+ 稳定期：
+
+| 档位 | 判定 | 自动 VM 的目标形态 |
+|---|---|---|
+| **宽裕** | 所有自动 VM 都能独占放下：Σ⌈vcpus/threads_per_core⌉ ≤ 空闲独占核，且每节点内存放得下 | **全部 A**：按节点装箱（vCPU 降序 first-fit，内存随 vCPU 同节点），两节点均衡 |
+| **适中** | 能全部绑节点、不能全部独占 | **A/B 混合**：优先级高、CPU 利用率高的保留 / 升为 A；其余 B（`cpu.weight` 按优先级）；节点间按内存 + vCPU 均衡 |
+| **紧张** | 内存或 vCPU 超分（`oc ≥ release_oc` 或内存用量 ≥ 预算） | **B/C**：独占核全部释放回共享池；vCPU 超分在两节点均衡；某节点内存放不下的 VM 允许 C（浮动、跨节点）；memtier VM 优先降级（它们对远端访存最不敏感） |
+
+档位只决定「目标形态」，具体哪台 VM 落哪个节点、谁保留独占，仍由目标函数决定。
+
+#### 3.10.3 求解与执行（每拍）
+
+触发：VM 启停 / 迁入迁出 / plan 应用完成 / 每 30s 一拍（`XVIRT_PLACEMENT_INTERVAL`）。
+
+```
+① 采样   拓扑 + plan；每 VM：vCPU 利用率（scope cpu.stat）、常驻内存与节点分布
+         （numa_maps）、优先级；每节点：oc、空闲独占核、空闲内存、PSI
+② 定档   计算 L，按滞回决定档位（进入更高档立即，退出需稳定 promote_stable_s）
+③ 求解   以当前放置为初解，目标形态为模板：贪心装箱（固定 VM 先占位 → 自动 VM 按
+         优先级、vCPU 降序 first-fit 到 Cost 增量最小的节点/等级，优先复用该 VM
+         已绑的核）→ 局部搜索（两两交换、单台迁移）直到 Cost 不再下降。
+         VM 数在百量级，毫秒级完成
+④ 差分   目标 vs 当前 → 动作列表，按成本排序：解绑核（免费）→ 绑核（免费）→
+         改 cpu.weight（免费）→ 收编 C→B（几乎免费，只写 cpuset）→ 换节点（有成本）
+⑤ 执行   免费动作本拍全部执行；换节点每拍最多 1 台、主机同一时刻最多 1 个内存迁移；
+         每台 VM 冷却 cooldown_s；VM 启动后 settle_after_boot_s 内不动；
+         换节点还要校验单次搬动上限 max_move_gb 与目标节点空闲内存 ≥ resident×1.1
+⑥ 记录   placement_event（动作、from/to、触发指标快照、收益估计）+ WS 推送；
+         结果回写 placement.json sidecar，下一拍读到新状态不重复下发，重启后也保持
+```
+
+**启动时准入**是同一求解器的增量调用：新 VM 按当前档位的目标形态入场（宽裕 → A，
+适中 → 按优先级 A 或 B，紧张 → B 或 C），**不为它挤动别人**；下一拍再做全局优化。
+准入在 lictor `launch_vm` 前由 hyper-agent 决定（同一台主机上串行，避免两台 VM
+同时抢同一批核），结果随启动参数一起下发；启动后 `placement_tier` 落库并推 WS。
+
+**oc 的口径**：节点共享池超分比 = Σ落在该节点的 B/C 级 vCPU ÷ 扣除独占后的共享线程
+数；B 级 vCPU 全算到其绑定节点，**C 级（浮动）VM 的 vCPU 按各节点共享线程数占比
+分摊**到每个节点，避免浮动 VM 在 oc 里被漏算或重复算。节点 CPU 压力：`cpu.pressure`
+不分 NUMA 节点，取该节点上所有 VM scope 的 `cpu.pressure some avg60` 按 vCPU 数加权
+聚合，或用 per-cpu `/proc/stat` 折算该节点共享线程的 busy%。
+
+**守卫**：plan 应用中（`/run/xvirt/resource-plan.applying`）、主机参与在线迁移中
+（`/run/xvirt/migrating-*`）、memtier 处于下刷档时全部暂停；`mode=advise` 只记录建议
+不执行（页面显示「建议」，供上线初期观察）；`dedicate_max_oc < release_oc` 且
+`promote_stable_s > 0` 是硬校验，保证 A/B 不会反复升降。所有决策写 `placement_event`
+（§4.1）可审计。
+
+**一个例子**（2 节点 × 8 核 16 线程，共享池每节点 6 核）：早上只有 3 台自动 VM
+（4/4/8 vCPU）→ 宽裕档，全部 A，N0 放 4+4、N1 放 8。中午再启 6 台 → 求解发现独占核
+不够 → 适中档：优先级 high 的 8 vCPU 保留 A，其余转 B，两节点各 4 到 5 台；转换只是
+解绑 + 改 cpuset，秒级完成。傍晚内存用量顶到预算 → 紧张档：剩余 A 释放，两台 memtier
+VM 转 C 允许跨节点；一台 12G 的 B 级 VM 因 N0 内存吃紧被搬到 N1（先切 vCPU，内存
+后台迁页约 10s）。晚上 VM 陆续关机 → 稳定 5 分钟后逐拍升回 A，每拍最多一次换节点。
+
+#### 3.10.4 在线调整的方法（确定项）
+
+前置：VM 已在独立 scope（§3.3）。不需要 QEMU 配合，也不需要 guest 配合。
+
+| 调整项 | 方法 | 生效 | 说明 |
+|---|---|---|---|
+| vCPU 可用范围 / 整 VM 换节点 | systemd `SetUnitProperties(scope, runtime=true, AllowedCPUs=…)` = 写 `cpuset.cpus` | **即时**（内核在下一个调度点迁移线程，µs–ms 级） | 一次覆盖 vCPU + 模拟器 + iothread 全部线程 |
+| vCPU 1:1 绑核 / 解绑 | lictor：QMP `query-cpus-fast` 取每 vCPU `thread-id` → `sched_setaffinity(tid, {cpu})`；解绑 = affinity 设回 scope 全集 | **即时** | 「顺序不敏感」只对 cpuset 的收缩/扩张成立（6.7 保存用户 affinity `user_cpus_ptr`，v6.2+：cpuset 变更后取交集，交集为空回退 cpuset 全集）；**`sched_setaffinity` 本身在 mask 与当前 cpuset 交集为空时仍返回 EINVAL**。所以硬性顺序：**扩池 / 换节点先改 cpuset 再 pin，缩池先解 pin（affinity 设回全集）再缩 cpuset** |
+| CPU 份额 | `CPUWeight=` = `cpu.weight` | 即时 | A 级 10000，B/C 级 100（可按优先级映射） |
+| **整 VM 内存换节点** | systemd `AllowedMemoryNodes=` = 写 `cpuset.mems`。cgroup v2 语义：变更 `cpuset.mems` 时内核对 cpuset 内每个进程的 mm 调 `cpuset_migrate_mm()` → `do_migrate_pages(…, MPOL_MF_MOVE_ALL)`，在内核 workqueue 里**异步迁页**；新分配立刻落到新节点 | 异步，吞吐按主机实测（经验 1–3 GB/s/节点，首次上线用 `migrate_bw_mbps` 标定） | 匿名页 / memfd(shmem) / 2M hugetlb 都可迁；与 libvirt `numatune --live`（strict 模式）同一机制。进度用 `/proc/<qemu pid>/numa_maps` 聚合（或 `numastat -p`）轮询 |
+| 按 memdev 换节点（vNUMA VM） | 我方 QEMU（memory-tiering 分支）加 QMP `x-memdev-rebind {id, host-nodes}`：对该 backend 的映射 `mbind(MPOL_BIND, MPOL_MF_MOVE|MPOL_MF_MOVE_ALL)` | 同步（可分片） | v1 不做，vNUMA VM 固定 manual；做了之后 vnode→host 映射可整体平移 |
+| 外部兜底 | hyper-agent 直接 `migrate_pages(2)`（pid, from, to）/ `move_pages(2)`（pid, 页地址表），需 `CAP_SYS_NICE` | 同步 | cpuset 路径失效时的备用；`move_pages` 可做 VMA 粒度（配 `/proc/pid/maps`） |
+
+**KVM 侧发生什么**：页迁移经 mmu_notifier 使 EPT 项失效，vCPU 下次访问该页
+触发 EPT violation 重建映射——guest 只感到该页一次短暂停顿，看不到任何拓扑变化
+（非 vNUMA 的 guest 拓扑本来就是单节点）。vCPU 线程换核对 guest 完全透明。
+
+**为什么不选其它路**：QEMU 没有运行时改 `host-nodes` 的 QMP（memory-backend 属性
+启动后只读）；guest 内 balloon/热插拔改的是容量不是位置；内核自动 NUMA 平衡
+（`kernel.numa_balancing`）是全局开关、按页扫描制造 EPT 抖动且与本控制器互相
+搬动——**主机上关掉它**（`=0`），由控制器做粗粒度、可审计的迁移。
+
+#### 3.10.5 换节点标准流程（vCPU + 内存一起在线搬）
+
+```
+1 准入   非 vfio / 非 1G 大页 / 非 vNUMA；目标节点 free_mem ≥ resident×1.1（A 级再要
+         ⌈vcpus / threads_per_core⌉ 空闲核）；主机无其它进行中的迁移；memtier VM → 通知总控对该 VM
+         quiesce（复用在线迁移已有的 quiesce 路径）
+2 vCPU   A 级先逐 vCPU 解 pin（affinity 设回当前 scope 全集），再 AllowedCPUs=<目标节点共享池>
+         ← 即时；目标为 A 级则随后逐 vCPU 在新节点 pin（遵守 §3.10.4「先解 pin 再动 cpuset」）
+3 内存   AllowedMemoryNodes=<目标节点>          ← 新页立刻落新节点，旧页后台迁移
+4 等待   轮询 numa_maps，目标节点占比 ≥ 95% 或超时（resident/带宽 × 3）即结束；
+         超时不回滚（残余远端页无害），页面标「部分迁移」，下拍继续
+5 落库   vm_config.numa_node / placement_tier / placement_source=auto；写 placement_event；
+         推 WS vm.placement_changed
+6 恢复   memtier 总控 resume
+```
+
+先搬 vCPU 再搬内存：vCPU 到位后新分配全部本地，迁移窗口内的远端访问被迁页吞吐
+上界住；反过来会让 vCPU 在旧节点上访问已搬走的页。
+
+#### 3.10.6 限制与上线验证项（6.7）
+
+- **vfio 直通**：全部 guest 内存被 pin，`migrate_pages` 返回 EBUSY——强制 manual。
+- **1G 大页**：hugetlb 迁移要求目标节点有空闲 1G 页、且逐页拷贝慢——排除在自动之外；
+  2M 大页允许，准入时校验目标节点 `free_hugepages`。
+- **memtier VM**：uffd-wp 页（PTE marker，5.19+）在页迁移下的行为要在我方分支
+  （swap-cache 设计）上实测——验证项 #1；已换出页不在内存，不受影响。
+- **petrel vhost 后端共享 memfd**：后端进程映射同一内存，`MOVE_ALL` 覆盖共享页；IO 进行中
+  的页被临时 pin 时内核重试——验证项 #2：迁移期间持续 fio 无错误。
+- **迁移吞吐与 EPT 抖动**：验证项 #3：8G/32G VM 迁移耗时、guest 内延迟毛刺分布，据此
+  定 `max_move_gb`（默认 64）与是否需要分片（`move_pages` 路径）。
+- **cpuset 与 affinity 交互**：验证项 #4：在 6.7 上确认缩 cpuset 后再扩回，vCPU 的
+  1:1 pin 自动恢复（`user_cpus_ptr` 语义），否则控制器在扩池后重下发 pin。
+- **迁页与内存策略/共享映射**：验证项 #5：绑定单节点 VM 改 `cpuset.mems` 后，若 QEMU
+  仍带 `host-nodes`（vNUMA memdev）MPOL_BIND 的 nodes_remap 是否跟上；memfd 共享映射在
+  petrel 后端侧（另一个进程、另一个 cgroup）的迁页表现——页归谁计费、是否被后端
+  的 mbind 顶回。
+
+#### 3.10.7 组件落点
+
+| 组件 | 内容 |
+|---|---|
+| hyper-agent | 放置控制器模块 `support/resource_plan/placement.py`（与 memtier 总控同形态的主机级循环：准入 + 再平衡决策 + 守卫）；算法部分为纯函数（`node_stats` / `load_index` / `pick_tier` / `solve` / `diff_actions`）可单测；执行层 = 经 lictor 的 `vm_apply_placement` 改 scope 的 AllowedCPUs / AllowedMemoryNodes / CPUWeight，读 `numa_maps` 跟进度；action `placement_status` / `placement_rebalance` / `placement_advise`；publish `vm.placement_changed` |
+| lictor | `vm_apply_placement` 在线放置原语 + 迁移中标记；`vm_pin_vcpus` / `vm_unpin_vcpus`（query-cpus-fast + setaffinity）；`launch_vm` 接收 agent 决定的等级与节点 |
+| ferrovirt | plan JSON `auto_placement{}`（§4.1）；`vm_config` 增 `placement_source / placement_tier`；`placement_event` 表；REST（§4.2）；事件摄取层接收 `vm.placement_changed` 落库 + WS |
+| xvirt-client | 主机视图新增「自动放置」卡：开关 / 建议模式 / 阈值 / 最近决策与进行中迁移进度；VM 列表 tier 徽标（A/B/C/V）+ 来源（自动 / 🔒手动）+ 迁移中标记；VM 视图「由控制器自动放置」提示 + 「锁定为手动」切换 + 在线 NUMA 迁移面板 |
 
 ---
 
@@ -281,19 +545,25 @@ xvirt-resource-plan.service (oneshot, Before=xvirt-lictor.service)
 |---|---|
 | `host_resource_plan`（新表） | `host_id`(uniq)、`version`(乐观锁)、`plan`(JSON，见下)、`pending_reboot`(JSON 数组)、`updated_at / updated_by`(JWT sub) |
 | `host_cpu_topology`（新表，扫描落库） | 逐逻辑 CPU 一行：`host_id, cpu, core, socket, node, online`；节点级信息（内存、distance）入既有 `device` 树或 JSON 列 |
-| `vm_config` 增列 | `cpu_placement`(shared\|dedicated)、`cpu_pins`(JSON "vcpu→pcpu")、`numa`(JSON vnode 列表)、`mem_backend`(anon\|memfd\|hugepage-2m\|hugepage-1g)、`mem_reserved_mb`(memory.min，可空)。均 `ALTER TABLE … ADD COLUMN IF NOT EXISTS`（沿用 ensure_schema 约定） |
+| `vm_config` 增列 | `cpu_placement`(shared\|dedicated，默认 shared)、`cpu_pins`(JSON "vcpu→pcpu")、`numa_mode`(none\|node\|vnuma，默认 none=浮动)、`numa_node`(node 模式的目标节点)、`numa`(JSON vnode 列表)、`placement_source`(auto\|manual，默认 auto)、`placement_tier`(A\|B\|C，控制器回写)、`mem_backend`(anon\|memfd\|hugepage-2m\|hugepage-1g)、`mem_reserved_mb`(memory.min，可空)。均 `ALTER TABLE … ADD COLUMN IF NOT EXISTS`（沿用 ensure_schema 约定） |
+| `placement_event`（新表，审计） | 控制器每个决策一行：`host_id, vm_uuid, ts, action`(admit\|promote\|demote\|rebalance\|bind\|advise)、`from_tier/to_tier`、`from_node/to_node`、`reason`(触发条件与当时指标快照 JSON)、`status`(applied\|advised\|failed\|partial)、`moved_bytes`、`duration_ms` |
 
 ```jsonc
 // host_resource_plan.plan —— 单一 JSON 文档（池成员表述为 cpu 列表，物理核对齐由校验器保证）
 { "schema": 1,
   "pools": { "system": [0,1,32,33], "virt": [2,3,34,35],
-             "spdk": { "cpus": [4,5,36,37], "isolated": true, "boot_profile": false },
-             "vm":   { "cpus": [6, "...", 63], "dedicated": { "<vm-uuid>": [12,13,44,45] } } },
+             "spdk": { "cpus": [4,5,36,37], "cap": 8, "isolated": true, "boot_profile": false },
+             "vm":   { "cpus": [6, "...", 63] } },   // 独占核集合不入 plan：由 vm_config.cpu_pins 派生（单一真相），GET 时聚合返回
   "memory": { "os_reserve_mb": 4096, "virt_reserve_mb": 8192,
               "vm_budget_mb": 214016, "headroom_pct": 4 },
   "hugepages": { "node0": { "2m": 8192, "1g": 16 }, "node1": { "2m": 8192, "1g": 16 },
                  "spdk_quota": { "2m": 2048, "1g": 4 } },
-  "memtier": { "evict_watermark_pct": 10, "swapback_watermark_pct": 50, "psi_high": 10 } }
+  "memtier": { "evict_watermark_pct": 10, "swapback_watermark_pct": 50, "psi_high": 10 },
+  "auto_placement": { "enabled": false, "mode": "advise",          // apply | advise，上线先 advise 观察
+      "dedicate_max_oc": 1.0, "release_oc": 1.5, "bind_max_oc": 2.0,
+      "min_shared_threads": 4, "numa_imbalance_pct": 25, "psi_cpu_high": 20,
+      "promote_stable_s": 300, "cooldown_s": 600, "settle_after_boot_s": 120,
+      "max_move_gb": 64, "migrate_bw_mbps": 1500 } }
 ```
 
 ### 4.2 REST（ferrovirt，均挂 JWT）
@@ -304,8 +574,10 @@ xvirt-resource-plan.service (oneshot, Before=xvirt-lictor.service)
 | `GET /api/vcenter/host/{uuid}/resource-plan` | plan + version + pending_reboot + 各项实际落地状态（plan vs 实况 diff，供「未生效」标记） |
 | `PUT /api/vcenter/host/{uuid}/resource-plan` | 带 `version` 乐观锁（409 = 需重载合并）；**异步任务**（kind=`applyResourcePlan`，走 TaskManager 约定），agent 幂等 reconcile，task.message 汇总逐项结果 |
 | `POST …/resource-plan?action=validate` | 服务端 dry-run：完整校验（§4.4）+ 生效性标注，不落地。编辑器「校验」按钮与提交前置检查共用 |
-| `PATCH /api/vcenter/vm/{vm}`（扩展） | `UpdateVmRequest` 增 `placement` 稀疏段（cpu_placement/cpu_pins/numa/mem_backend/mem_reserved_mb）；运行中仅 pins/weight 可热调，其余标「下次启动生效」 |
+| `PATCH /api/vcenter/vm/{vm}`（扩展） | `UpdateVmRequest` 增 `placement` 稀疏段（cpu_placement/cpu_pins/numa/mem_backend/mem_reserved_mb/source）；运行中仅 pins/weight/numa_node（走 §3.10.5 迁移流程）可热调，其余标「下次启动生效」；`source=manual` = 锁定（控制器不再动它），改回 `auto` 时控制器下拍重新准入 |
 | `GET /api/vcenter/host/{uuid}/memtier`（新聚合） | 各 memtier VM 的 MemTierInfo + 总控状态（当前压力、水位线、每 VM 当前档位）——面板一次拉全 |
+| `GET /api/vcenter/host/{uuid}/placement` | 控制器状态：档位与 L 指数、每节点 oc / free_ded_cores / free_mem、节点健康分与距离矩阵、进行中的迁移（VM、目标节点、已迁百分比）、最近 N 条 `placement_event` |
+| `POST /api/vcenter/host/{uuid}/placement?action=rebalance\|advise` | 手动触发一拍（advise 只出建议）；异步任务 |
 
 ### 4.3 agent actions（ZMQ）
 
@@ -314,29 +586,38 @@ xvirt-resource-plan.service (oneshot, Before=xvirt-lictor.service)
 | hyper-agent | `scan_cpu_topology` | 拓扑 + 每 CPU 实际 cgroup 归属 + 大页现势（挂进 hardware-scan 综合扫描） |
 | hyper-agent | `apply_resource_plan` / `validate_resource_plan` | §3.9 的幂等 reconcile / 纯校验；写 `/etc/xvirt/resource-plan.json` |
 | hyper-agent | `memtier_host_status` | 总控快照：压力合成值、水位线、每 VM 下发档位（供 §4.2 聚合端点） |
-| lictor | `launch_vm` 扩展 + `vm_pin_vcpus` | scope 放置（§3.3）；运行中改独占绑定（query-cpus-fast + setaffinity + scope cpuset 更新） |
+| hyper-agent | `placement_status` / `placement_rebalance` / `placement_advise` | §3.10 控制器：状态快照（3s 缓存）/ 手动触发一拍 / 只出建议 |
+| lictor | `launch_vm` 扩展 + `vm_apply_placement` + `vm_pin_vcpus` / `vm_unpin_vcpus` | scope 放置（§3.3）；在线改 scope 属性与独占绑定（query-cpus-fast + setaffinity + cpuset 更新） |
 
 ### 4.4 校验规则（validate 与 apply 共用）
 
 - 池两两不交、并集 = 全部在线 CPU；HT 兄弟同池；system ≥ 2C、virt ≥ 2C。
 - 缩池冲突：目标池变更后，受影响核上有运行中 VM 的独占绑定 → 列出阻塞 VM 清单拒绝
   （需先解绑/迁移/关机）。
-- spdk 池变更时校验 isolated 前提（所有顶层 slice 均已显式 AllowedCPUs——由本方案
-  自动满足）。
+- spdk 池变更时校验 isolated 前提：扫根下全部子 cgroup（含临时 scope / 容器运行时的组）
+  的 `cpuset.cpus` 与 spdk 池无重叠；spdk 池规模不得超过候选核上限 `cap`（`spdk_over_cap`）；
+  apply 后回读 `cpuset.cpus.partition`，非 `isolated` 即失败并原样上报原因字符串。
 - 大页：目标值 < 当前 `nr - free`（在用）→ 拒绝；1G 增量运行时分配失败 → 降级为
   pending-reboot 而非失败。
-- 内存恒等式（§3.4）成立且安全余量 ≥ 4%；VM 池预算低于运行中 VM 保证线 → 拒绝，
-  低于超分线 → 警告。
+- 内存预算不等式（§3.4）成立且安全余量 ≥ 4%（残差按观测峰值）；`machine.slice` 的
+  `memory.max` 由校验器推导、不可手填；VM 池预算低于运行中 VM 保证线 → 拒绝，
+  低于超分线 → 警告；模式 C VM 只以 overhead 计入 VM 池、主内存计入大页池。
 - VM 放置：pins ⊆ 所属池；模式互斥矩阵（§2.3）；模式 C 的节点大页余量足额。
+- 浮动 VM 与共享池：共享池可用线程（扣独占）为 0 而有运行中浮动 VM → 拒绝；
+  可用线程 < 任一浮动 VM 的 vCPU 数 → 拒绝；Σ浮动 vCPU / 可用线程 > 4 → 警告；
+  某节点共享池核为 0 → 警告（该节点上的浮动内存将跨节点访问）；
+  绑定单节点的共享 VM 所在节点共享池核为 0 → 拒绝。
+- 自动放置（§3.10）：控制器只动 `placement_source=auto` 的 VM；vfio / 1G 大页 /
+  vNUMA VM 强制 manual；`dedicate_max_oc < release_oc`（独占超分必须低于释放超分）
+  且 `promote_stable_s > 0` 为硬校验；换节点前目标节点空闲内存 ≥ resident×1.1。
 
 ---
-
 ## §5 页面设计与交互
 
 ### 5.1 信息架构与整体布局
 
-入口：**主机详情新增第 5 个 tab「资源规划」**（standalone 与 center 的 host 详情
-共用；center 后续可加聚合视图）。页面 = 左侧四块面板纵排 + 右侧检查器栏：
+入口：**主机详情新增「资源规划」tab**（standalone 与 center 的 host 详情
+共用；center 后续可加聚合视图）。页面 = 左侧面板纵排 + 右侧检查器栏：
 
 ```
 ┌─ 工具栏：查看/编辑切换 · 汇总 chips（64 CPU · 已隔离 4 · 大页 48G · 预留 12G）─┐
@@ -349,11 +630,13 @@ xvirt-resource-plan.service (oneshot, Before=xvirt-lictor.service)
 │ ② 内存与大页板                                │   （逐项撤销）                │
 │    每 NUMA 节点一条分段横条 + 拖拽手柄        ├───────────────────────────────┤
 │    大页明细行（2M/1G × 总量/在用/SPDK 圈占）  │ 虚拟机放置列表                │
-│ ③ 内存分层板                                  │   每 VM 一行：池 · 绑定 ·     │
-│    主机压力计 + 两条水位线刻度                │   NUMA · 内存模式 ·           │
-│    逐 VM 常驻/换出条 + 优先级；后端盘水位     │   memtier 徽标                │
-│ ④ SPDK 板                                     │   行可拖到 CPU 板做独占绑定   │
-│    预留核 · 大页圈占 · 低抖动启动档开关       │                               │
+│ ③ 内存分层板                                  │   每 VM 一行：等级徽标 ·      │
+│    主机压力计 + 两条水位线刻度                │   固定/自动 · 池 · 绑定 ·     │
+│    逐 VM 常驻/换出条 + 优先级；后端盘水位     │   NUMA · 内存模式 ·           │
+│ ④ 自动放置卡（§3.10）                         │   memtier 徽标 · 迁移中标记   │
+│    档位 · L 指数 · 目标形态 · 本拍动作        │   行可拖到 CPU 板做独占绑定   │
+│ ⑤ 节点监控条（§6.2）                          │                               │
+│ ⑥ SPDK 板                                     │                               │
 └───────────────────────────────────────────────┴───────────────────────────────┘
 ```
 
@@ -378,6 +661,7 @@ xvirt-resource-plan.service (oneshot, Before=xvirt-lictor.service)
 [内核·其它 6G][OS 4G‖][虚拟化 8G‖][大页2M 16G‖][大页1G 16G ⟳‖][VM池 已用41G/预算58G][空闲·缓存 20G]
   ‖ = 可拖拽手柄     ⟳ = 该段变更需重启生效
   附注行：大页在用 9.2G（VM×3）· SPDK 圈占 1G×4 · 安全余量 ≥ 4%（校验器强制）
+  固定 VM 的 mem_reserved_mb 在 VM 池段内以实色标出
 ```
 
 **内存分层板**（数据源：x-memtier-query 聚合 + 总控状态）：
@@ -403,7 +687,7 @@ db-core-01   [high]   [常驻▓▓▓▓▓▓▓▓▓▓]            常驻 1
 | 拖拽 | 手势 | 效果与约束 |
 |---|---|---|
 | 核 → 池 | 拖物理核（HT 成对）到图例池 chip；或框选多核后点池 chip | 草稿中重着色为斜纹待定态；缩池撞独占绑定时高亮阻塞 VM 并拒绝落点 |
-| VM → 核 | 从右栏 VM 行拖到 CPU 板 | 悬停时同 NUMA 节点的合法核亮起幽灵框；落下 = 该 VM 转独占 + 绑定这些核；跨节点落点显示警告（破坏 NUMA 亲和） |
+| VM → 核 | 从右栏 VM 行拖到 CPU 板 | 悬停时同 NUMA 节点的合法核亮起幽灵框；落下 = 该 VM 转独占 + 绑定这些核（同时转为 manual 固定）；浮动 VM 被拖上来时内存随之改绑该节点（标「下次启动」）；跨节点落点显示警告（破坏 NUMA 亲和） |
 | 内存段手柄 | 横向拖竖条 grip | 吸附步进：预留 256M、2M 大页 2M、1G 大页 1G；右栏输入框同步（拖拽给趋势、输入给精确值）；1G 段即时标 ⟳ |
 | 水位线刻度 | 拖压力计上的两个 tick | 下刷线恒 < 回血线（互相钳制） |
 
@@ -412,7 +696,7 @@ db-core-01   [high]   [常驻▓▓▓▓▓▓▓▓▓▓]            常驻 1
    其它人改动（version 变化）顶部横幅提示。
 3. **编辑**：拖拽/输入 → 右栏变更清单逐条累积，每条带生效性徽标
    「即时 / 需 VM 重启 / 需主机重启」与撤销按钮；客户端实时跑轻量校验
-   （池覆盖/恒等式/互斥矩阵）。
+   （池覆盖/预算不等式/互斥矩阵）。
 4. **校验**：`POST ?action=validate` 服务端 dry-run，结果逐条对应到变更清单
    （阻塞项红、警告黄）。
 5. **应用**：`PUT resource-plan`（带 version）→ 异步任务，走既有任务面板/WS 跟踪；
@@ -436,39 +720,109 @@ db-core-01   [high]   [常驻▓▓▓▓▓▓▓▓▓▓]            常驻 1
 |---|---|
 | 内核 | `/proc/stat` 全机 − Σ 顶层 slice `cpu.stat`（残差法）；内存 = meminfo 减各 slice current 与大页后的残差 |
 | 系统服务 | `system.slice` + `user.slice` + `init.scope` 的 cpu.stat / memory.current |
-| 虚拟化系统 | `xvirt.slice` 汇总，展开到 service 级 |
-| 虚拟机 | `xvirt-machine.slice` 汇总，展开到 per-VM scope（这正是 §3.3 改造后才可能拿到的口径） |
+| 虚拟化系统 | `virt.slice` 汇总，展开到 service 级 |
+| 虚拟机 | `machine.slice` 汇总，展开到 per-VM scope（这正是 §3.3 改造后才可能拿到的口径） |
 
 ### 5.6 前端实现要点
 
 - **零新依赖**：拓扑网格/分段条/压力计全部 CSS + 少量 SVG，无图表库；拖拽用原生
   Pointer Events（控制台浮窗已有同款手写拖拽先例），不引 dnd 库。
-- **新组件**：`components/host/ResourcePlanTab.jsx` 挂 host 详情 tab；子组件
-  `CpuTopologyBoard / MemoryBoard / MemtierBoard / SpdkCard / PlanInspector /
-  VmPlacementList`；草稿与 diff 逻辑仿 `diffVmConfig` 模式（orig 快照 + working
-  state + 提交时差异）。
+- **新组件**：`components/host/resplan/` 下 `ResourcePlanTab.jsx` 挂 host 详情 tab；
+  子组件 `CpuTopologyBoard / MemoryBoard / MemtierBoard / AutoPlacementCard /
+  NodeHealthBoard / SpdkCard / PlanInspector / VmPlacementList`；草稿与 diff 逻辑仿
+  `diffVmConfig` 模式（orig 快照 + working state + 提交时差异）。
 - **i18n**：全部文案走 `useI18n` 键（zh/en 字典同步补齐），不再新增硬编码中文。
 - **降级**：无 plan（老 agent / 未初始化）→ 只读拓扑 + 「初始化资源规划」引导按钮
   （生成默认池：全部 vm-shared + 最小 OS/virt 池建议值）。
+- **center 壳传参**：host 节点 id 带 `host-<uuid>` 前缀，取 `hostUuid`；inventory
+  host 节点要带 ip（资源规划 tab 按 host ip 查 per-CPU 利用率）。
 
 ---
 
-## §6 指标采集链路
+## §6 可观测性
+
+### 6.1 指标采集链路
 
 复用既有链路：`hyper-agent exporter(:9101) → vmagent → VictoriaMetrics(:8428) →
 ferrovirt /api/vcenter/metrics(PromQL 白名单) → 前端`。本方案只增 collector 与
-白名单前缀；plan/topology 等配置态数据走 §4.2 的 REST，不进时序库。
+白名单前缀；plan/topology/placement 等配置与决策态数据走 §4.2 的 REST，不进时序库。
 
-| 新 collector（hyper-agent） | 指标（示例） | 源 |
+**第一档 · 池化与归户**（plan 落地后即可读）：
+
+| collector | 指标 | 源 |
 |---|---|---|
-| `collectors/cpu_pool.py` | `xvirt_cpu_busy_ratio{cpu,pool,node}` · `xvirt_pool_cpu_ratio{pool}` | `/proc/stat` 逐 CPU + plan 归属映射 |
-| `collectors/slice.py` | `xvirt_slice_cpu_seconds_total / memory_bytes / psi{slice,service}` | 顶层 slice 与 service 的 `cpu.stat / memory.current / *.pressure` |
-| `collectors/numa.py` | `xvirt_node_mem_bytes{node,kind}` · `xvirt_hugepages{node,size,state}` | node meminfo + hugepages sysfs |
-| `collectors/vm_direct.py` | `xvirt_vm_cpu_usage_ratio / memory_used_bytes / cpu_pressure_*{vm}` | per-VM scope cgroup（即 `vm-direct-metrics-design.md` 的落地，§3.3 是它的前置） |
-| `collectors/memtier.py` | `xvirt_vm_memtier_{resident,swapped,backing_used}_bytes / evict_mbps{vm}` | lictor `memtier_query`（总控每拍已在查，复用同一份缓存避免双倍 QMP） |
+| `collectors/resource_plan.py` | `xvirt_cpu_busy_ratio{cpu,pool,node}` · `xvirt_pool_cpu_ratio{pool}` · `xvirt_pool_cpus{pool}` | `/proc/stat` 逐 CPU + plan 归属映射 |
+| 同上 | `xvirt_slice_cpu_seconds_total / _memory_bytes / _memory_min\|high\|max_bytes / _pressure_ratio{slice}`、`xvirt_service_*{service}` | 顶层 slice 与 service 的 `cpu.stat / memory.* / *.pressure` |
+| 同上 | `xvirt_node_mem_bytes{node,kind}` · `xvirt_hugepages{node,size,state}` · `xvirt_hugepages_bytes` | node meminfo + hugepages sysfs |
+| 同上 | `xvirt_vm_tiering_{resident,swapped,backing_used,backing_total}_bytes` · `_evict_mbps` · `_swapin_faults_total` · `_evict_aborts_total` · `_tier{vm}`、`xvirt_host_tiering_{pressure,headroom,state}` | lictor `x-memtier-query`（总控每拍已在查，复用同一份缓存避免双倍 QMP） |
+
+**第二档 · NUMA 分布与节点健康**（放置控制器的输入）：
+
+| 指标 | 含义 |
+|---|---|
+| `xvirt_vm_numa_bytes{vm,node}` | 每 VM 每节点实测常驻字节（`/proc/<pid>/numa_maps` 聚合） |
+| `xvirt_vm_vcpu_cpu{vm,vcpu}` / `xvirt_vm_vcpu_node{vm,vcpu}` | vCPU 实测落点。靠 QEMU 线程名 `CPU n/KVM` + `stat` 第 39 字段拿到，**不需要 QMP**，绑核与浮动都适用 |
+| `xvirt_vm_remote_mem_ratio{vm}` | 远端访存比例，按 vCPU 数加权；**无实测数据返回 None 而不是 0**（不用假值污染合成） |
+| `xvirt_node_numastat{node,kind}` / `xvirt_node_vmstat{node,kind}` / `xvirt_node_distance{from,to}` | 节点计数器与距离矩阵 |
+| `xvirt_node_health_score{node}` / `_component{node,part}` / `_level{node}` | 节点健康分（见下） |
+
+**节点健康分**：六个分量各自归一到 0..1，**score 取最大值**——任一维度出问题都该
+报警，取平均会把它稀释掉。拿不到实测的分量为 None，不参与 max。
+
+| 分量 | 满刻度 | 说明 |
+|---|---|---|
+| `cpu_busy` | 1.0 | 该节点各 CPU 忙比均值 |
+| `runq` | 1 ms | 节点内**取最差 CPU** 的运行队列平均等待。只看忙比会漏掉超线程互抢与降频，排队延迟能同时覆盖 |
+| `mem_used_ratio` | 1.0 | `used_mb / budget_mb` |
+| `remote_mem_ratio` | 1.0 | 按该节点 vCPU 数加权的各 VM 远端比例；无实测为 None |
+| `spill` | 2000 次/秒 | `numa_miss + numa_foreign` 速率（分配溢出） |
+| `reclaim` | 5000 次/秒 | `workingset_refault + nodereclaim` 速率（回收活动） |
+
+分级：`score ≥ 0.85` 为 bad，`≥ 0.60` 为 warn，否则 ok；同时给出 `worst`（最差分量名，
+全为 0 时按插入顺序给 `cpu_busy`，而不是字母序的随机项）。
+
+**第三档 · RDT 实测带宽与排队延迟**（有硬件才有）：
+
+| 指标 | 说明 |
+|---|---|
+| `xvirt_cpu_runq_seconds{cpu}` | `/proc/schedstat` 的 `Δrun_delay / Δpcount`，每 CPU 运行队列平均等待 |
+| `xvirt_vm_mbm_total_bytes_per_second{vm}` / `_local_*` / `xvirt_vm_remote_bw_ratio{vm}` | resctrl MBM：每 VM 一个监控组（`mon_groups`，只占 RMID 不配 schemata），组内线程对账，跨 L3 域求和 |
+| `xvirt_vm_llc_occupancy_bytes{vm}` | LLC 占用 |
+| `xvirt_rdt_state` | resctrl 可用性与原因（页面显示） |
+
+- **实测优先、估计回落**：`effective_remote_ratio()` 有 RDT 实测用实测，否则回落到
+  按驻留分布的估计值。估计值会**高估**——冷页留在远端其实无害——页面上带 `*` 并
+  在脚注说明。
+- **安全降级**：`XVIRT_RDT=off` 可禁用；RMID 耗尽只告警一次并跳过；读到
+  `Unavailable` 按缺数据处理而不是 0；计数器回绕也返回 None。
+
+**第四档 · 放置控制器自身**：`xvirt_placement_load_index` · `_tier` ·
+`_node_oc{node}` · `_node_free_dedicated_cores{node}` · `_node_free_mem_bytes{node}` ·
+`_dedicated_cores` · `_pending_actions` · `xvirt_vm_placement_tier{vm}`。
 
 ferrovirt `metrics.rs` L1 白名单补 `xvirt_cpu_ / xvirt_pool_ / xvirt_slice_ /
-xvirt_node_ / xvirt_vm_memtier_` 前缀。页面查询频率 5s，与既有 VMMonitor 一致。
+xvirt_service_ / xvirt_node_ / xvirt_hugepages / xvirt_vm_ / xvirt_host_tiering_ /
+xvirt_placement_ / xvirt_rdt_` 前缀，并放行 `vcpu / from / to / part / level / cgroup`
+标签（eBPF runqlat 按 cgroup 归户）。页面查询频率 5s，与既有 VMMonitor 一致。
+
+### 6.2 页面展示
+
+**节点监控条（NodeHealthBoard）**：每 NUMA 一行画 CPU 忙比 / 排队延迟 / 内存用量 /
+远端访存 / 分配溢出 / 回收活动六个小刻度条，超阈值变色；右侧给合成健康分与最差项；
+下方 NUMA 距离矩阵。无实测落点的远端访存显示「—」而非 0，并在脚注说明不计入健康合成。
+
+**虚拟机 NUMA 分布视图**：每 VM 两条——vCPU 落点条 + 内存落点条，**按远端访存降序
+排列 = 天然的迁移候选清单**。有 RDT 实测优先用实测，估计值带 `*`；排序口径与显示一致。
+
+**自动放置卡（AutoPlacementCard）**：负载档位与 L 指数三来源（oc / 内存比 / PSI）、
+独占核供需、目标形态、每节点 oc / 共享线程 / 空闲独占核 / 空闲内存、本拍动作
+（免费 / 有成本）、迁移进度、最近决策、阈值编辑、「执行一拍」/「仅出建议」按钮。
+
+**VM 放置列表**：A/B/C/V 等级徽标 + 固定 🔒 / 自动 + 迁移中标记；对话框加固定/自动
+横幅与在线 NUMA 迁移面板（实测分布 + §3.10.5 五步流程 + 准入拦截原因）。
+
+> 这些数据全部取自 `placement_status` 快照（agent 侧已合成），**页面不发 PromQL**——
+> 一次求解要扫全量 sysfs + 装箱，快照带 3s 缓存，避免每个观察者各跑一遍。
 
 ---
 
@@ -477,15 +831,16 @@ xvirt_node_ / xvirt_vm_memtier_` 前缀。页面查询频率 5s，与既有 VMMo
 | 阶段 | 交付 | 动到的组件 |
 |---|---|---|
 | **P0 · 看得见** | 拓扑扫描落库；cpu_pool/slice/numa/memtier collectors；「资源规划」tab 只读版（拓扑板 + 内存板 + memtier 板 + 归户条，池归属显示为「未规划=全部共享」） | hyper-agent（scan + collectors）、ferrovirt（topology API + 白名单）、xvirt-client |
-| **P1 · 池化落地** | plan 模型/REST/本地缓存/开机对账；slice AllowedCPUs + memory.min/high；**per-VM scope 改造**；编辑模式（核→池拖拽、内存段手柄、2M 大页）+ validate + 异步应用 | ferrovirt（plan/validate/task）、hyper-agent（apply/reconcile + 单元）、lictor（scope 启动）、xvirt-client（编辑器） |
+| **P1 · 池化落地** | plan 模型/REST/本地缓存/开机对账；slice AllowedCPUs + memory.min/high/max；**per-VM scope 改造**；编辑模式（核→池拖拽、内存段手柄、2M 大页）+ validate + 异步应用 | ferrovirt（plan/validate/task）、hyper-agent（apply/reconcile + 单元）、lictor（scope 启动）、xvirt-client（编辑器） |
 | **P2 · VM 落位** | vm_config 放置列 + PATCH 扩展；独占绑定（VM→核拖拽 + query-cpus-fast pin）；单节点自动放置 + 显式 vNUMA；模式 C 大页后端；vm_direct collector | ferrovirt、lictor（backend/pin）、hyper-agent（config 传递）、前端（VM 放置 UI + vNUMA 图） |
-| **P3 · SPDK** | spdk.slice + isolated 分区 + IRQ 驱离 + hugetlb 圈占 + SPDK 板；可选低抖动启动档（xvirt-init grub drop-in） | hyper-agent、xvirt-init、前端 |
+| **P2.5 · 自动放置** | §3.10 放置控制器：启动准入 A/B/C + 再平衡（解绑/绑核/换节点/收编）+ 守卫；scope 属性热改 + numa_maps 进度；`placement_event` 审计；**先以 `mode=advise` 上线观察再切 apply**；§6.1 第二/三档可观测性；验证项 #1–#4 | hyper-agent（controller + RDT）、lictor（vm_apply_placement / pin）、ferrovirt（plan 字段 / 事件 / REST）、前端（自动放置卡 + tier 徽标 + 锁定 + 节点监控条） |
+| **P3 · SPDK** | spdk.slice + isolated 分区 + IRQ/workqueue 驱离 + hugetlb 圈占 + 候选核上限 + SPDK 板；可选低抖动启动档（xvirt-init grub drop-in） | hyper-agent、xvirt-init、前端 |
 | **P4 · memtier 融合** | 总控读 plan 水位线/预算（替换环境变量常量）；VM 池预算项进压力合成；可选热集 memory.min 同步；水位线 UI 编辑 | hyper-agent（controller.py）、ferrovirt、前端 |
 
 P0/P1 是主体（P1 里 per-VM scope 是全方案的地基，也同时解锁 per-VM 指标直采）；
 P2–P4 相互独立，可按需要排序。每阶段都端到端可用、可在 123/106 真机验证，并可给
-xvirt-autotest 加 stage（plan validate/apply 幂等性、缩池阻塞、互斥矩阵 400 等
-都是好用例）。
+xvirt-autotest 加 stage（plan validate/apply 幂等性、缩池阻塞、互斥矩阵 400、
+放置控制器的档位滞回与守卫都是好用例）。
 
 ---
 
@@ -495,24 +850,84 @@ xvirt-autotest 加 stage（plan validate/apply 幂等性、缩池阻塞、互斥
   `memory.current` 初期偏低（§3.3）。选择「重启渐进生效」或接受初期统计偏差并在
   UI 标注。
 - **缩 cpuset 与线程亲和的顺序**：先清/改线程 `sched_setaffinity` 再缩 scope
-  cpuset，否则 affinity ∩ cpuset = ∅ 会报 EINVAL；reconcile 内固定「先松绑后缩池」
-  顺序。
-- **isolated 分区写入失败**：任何一个顶层 cgroup 没设 AllowedCPUs 或与 spdk 池
-  重叠，写 partition 返回 EINVAL 且**无 dmesg 提示**——agent 必须回读
-  `cpuset.cpus.partition` 确认（值可能是 `isolated invalid`），失败时逐项报告是
-  哪个 slice 冲突。
+  cpuset；6.7 内核（v6.2+ `user_cpus_ptr`）在 cpuset 变更时会自动取交集、交集为空
+  回退 cpuset 全集，但 `sched_setaffinity` 调用本身遇到与当前 cpuset 交集为空的
+  mask 仍返回 EINVAL——换节点必须「解 pin → 改 cpuset → 重 pin」（§3.10.5）；扩回池后
+  pin 是否自动恢复要实测（§3.10.6 验证项 #4）。
+- **新 VM 必须在 exec 前进入 scope**：先起 QEMU 再搬 pid 会让 prealloc 的内存与
+  大页永久计费到 lictor 的 cgroup（§3.3）——`hugetlb.*.max` 对这台 VM 形同虚设。
+  代码评审把这条当硬性检查项。
+- **isolated 分区写入失败的表现**：6.7 上约束不满足时写入**不返回 EINVAL**，写成功
+  但状态变为 `isolated invalid (<原因>)`，原因字符串直接可读（如
+  `Cpu list in cpuset.cpus not exclusive`）——agent 回读解析上报即可，不必逐 slice 猜冲突。
+  冲突只看兄弟 cgroup **已配置**的 `cpuset.cpus`，对账时扫根下全部子 cgroup（§3.2）。
 - **1G 大页运行时分配**：开机越久成功率越低；已按「pending-reboot 降级 + 开机早期
   投放」设计，不要在 apply 里无限重试 compact。
 - **memory.min 过配**：Σ min 逼近 MemTotal 会把全局回收逼到无页可扫、触发 OOM——
-  恒等式的 4% 安全余量是硬校验，不给 UI 绕过入口。
+  预算不等式的 4% 安全余量是硬校验，不给 UI 绕过入口。
 - **VM 池 memory.high 节流的连带效应**：顶到 high 后 QEMU 线程会被 reclaim 节流，
-  vCPU 出现毛刺——memtier 水位线应设在 high 之前触发（预算项进压力合成正是为此，
-  §3.7）。
+  vCPU 出现毛刺——memtier 水位线应设在 high 之前触发（预算项进压力合成正是为此，§3.7）。
 - **vhost-net/内核线程不可归户**：其 CPU 落「内核/其它」段；重 IO 的 VM 会让该段
   偏大，口径说明要写进 tooltip，避免被当成泄漏排查。
 - **systemd 与手写 cgroupfs 的共管边界**：AllowedCPUs 走 systemd（防 daemon-reload
-  覆盖）；partition/hugetlb 上限走直写 + 开机单元重放；不要两边写同一属性。
+  覆盖）；partition/hugetlb 上限/`memory.oom.group` 走直写 + 开机单元重放；不要两边
+  写同一属性。
 - **单 NUMA 开发机 vs 多 NUMA 生产机**：所有 per-node 逻辑必须在 node 数=1 时退化
   正确；autotest 用例要在两种拓扑各跑一轮。
 - **petrel OSD 的突发 CPU**：recovery/rebalance 时 virt 池可能被打满，影响管理面
   响应——virt 池规模建议随「是否跑 OSD」联动，页面在 virt 池 PSI 高时给提示。
+- **自动放置抖动（§3.10）**：阈值太近会让 VM 在 A/B 间反复升降、或两节点来回搬——
+  升降各自独立阈值（1.0 / 1.5）+ 稳定期 + 每 VM 冷却 + 每拍一件事是硬性守卫；上线
+  先 advise 模式看一周决策日志再切 apply。
+- **`cpuset.mems` 迁页是异步且不可取消的**：写下去内核 workqueue 就开始搬，中途改主意
+  只能再写回原节点（等于再搬一次）——控制器对「进行中」的 VM 不再下发任何新决策，
+  超时也只标「部分迁移」不回滚。
+- **迁页期间的 guest 毛刺**：每页一次 EPT 重建 + 迁页占用内存带宽；对延迟敏感 VM 应设
+  `placement_source=manual` 锁死；`max_move_gb` 限制单次搬动规模。
+- **内核自动 NUMA 平衡与控制器打架**：主机 `kernel.numa_balancing=0`（xvirt-init
+  sysctl drop-in），否则内核会按页扫描把控制器刚搬好的页再挪走并制造 EPT 抖动。
+- **vfio / 1G 大页 / vNUMA VM 不可自动搬**：pin 页不能迁、1G 需目标有空闲页且慢、
+  vNUMA 缺 per-memdev 迁移原语（待 `x-memdev-rebind`）——统一强制 manual，UI 标明原因。
+
+---
+
+## 附录 · 实现状态（截至 2026-09-18）
+
+| 范围 | 状态 |
+|---|---|
+| P0 看得见 | **已实现**：拓扑与 cgroup 实况扫描、指标 collector、「资源规划」tab 只读版 |
+| P1 池化落地 | **已实现**：plan 模型 / REST / 本地缓存 / 开机早期重放；顶层 slice 的 AllowedCPUs 与 memory.min/high/max；per-VM scope（浮动挂 `machine-shared.slice`，绑定/独占显式 AllowedCPUs/AllowedMemoryNodes/CPUWeight）；存量 QEMU 迁入 scope;编辑模式 + validate + 异步应用 |
+| P2 VM 落位 | **基础已实现**：放置列 + PATCH 稀疏段 + 热调；独占绑核 / 解绑（query-cpus-fast + setaffinity）；三种内存后端（memfd prealloc / 2M / 1G）；显式 vNUMA 启动落位 |
+| **P2.5 自动放置** | **已实现**（2026-09-14）：`support/resource_plan/placement.py` 放置控制器（负载档位 + 滞回 + 贪心装箱 + 差分执行 + 全部守卫）；lictor `vm_apply_placement` 在线原语；`placement_event` 审计表 + 控制器 REST；前端自动放置卡 / 等级徽标 / 在线 NUMA 迁移面板。默认 `enabled=false, mode=advise` |
+| §6.1 可观测性 | **已实现**（2026-09-14）：第二档 NUMA 分布与节点健康（vcpu 落点、remote_mem_ratio、numastat/vmstat/distance、六分量健康分）；第三档 RDT MBM 实测带宽 + schedstat 排队延迟（`rdt.py`，含无硬件安全降级） |
+| §6.2 页面 | **已实现**（2026-09-14）：NodeHealthBoard 节点监控条、虚拟机 NUMA 分布视图（按远端访存降序）、实测/估计区分 |
+| P3 SPDK | **基础已实现**：spdk.slice isolated 分区、IRQ / workqueue 驱离、irqbalance drop-in、大页圈占、候选核上限 `cap` |
+| P4 memtier 融合 | **已实现**：水位线 / PSI 满刻度 / VM 池预算从 plan 读取，VM 池挤占度并入压力合成 |
+
+**单测覆盖**：`hyper-agent/tests/test_resource_plan.py` 12 例（plan 纯函数）、
+`tests/test_placement.py` 33 例（归节点、远端比例四情形、健康分取最大值/分级/归一化/
+空值不污染、实测优先与估计回落、runq 归一、RDT 比例与带宽换算、无硬件安全降级）。
+
+**与设计的已知差异（后续补）**：
+
+- 内存板的 OS / 虚拟化预留目前是主机级字段，按主机级条拖动，不做逐节点手柄。
+- 浮动 VM 的跨节点内存分布在接入 numastat 采集前按节点数均分估算。
+- 按 memdev 的运行时 NUMA 重绑（`x-memdev-rebind`）未做，vNUMA VM 只在启动时落位。
+- `cpu.weight` 仍是 A 级 10000 / B·C 级 100 两个常量，未按优先级与实测排队延迟动态
+  调整——**紧张档下 `priority` 对 CPU 份额不起作用**（§1 非目标里的「CPU 时间片精细
+  QoS」尚未开工）。
+- per-VM `memory.min` 只在用户手填 `mem_reserved_mb` 时写入；§3.7 的「热集保护
+  memory.min 自动同步」未实现——VM 池顶到 `memory.high` 触发回收时，谁被回收不受
+  优先级控制。
+- 放置控制器与 memtier 总控是两个独立的 30s 循环，只有单向让路（memtier 下刷档时
+  placement 暂停），没有共同目标函数；memtier 长期处于下刷档会让 placement 长期暂停。
+- `tick` 里只有换节点限「每拍一台」，pin/unpin/bind/unbind 等免费动作没有全局上限，
+  首次进紧张档会在一拍内对所有 A 级 VM 下发解绑。
+- `L` 指数的分量全是压力/占用量，没有 per-VM 的 steal / 等待归户——控制器无法回答
+  「这次动作是否让这台 VM 变快」，目前是开环按规则动。
+
+---
+
+> 本文档随 xvirt 平台代码演进，位于 **ferrostack** 仓库 `resource-planning/docs/`
+> （xvirt 仓库下的同名 docs 目录为历史副本，不再更新）。
+> 源码中以 `docs/resource-planning.md §N` 的形式引用本文各节。
