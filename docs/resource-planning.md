@@ -42,6 +42,50 @@ SPDK、memtier 统一收进一份 per-host「资源规划（resource plan）」�
 「在线增减」是账面上的。VM 的放置每天都在变，必须在 ②③。**把 SPDK 压到 ① 不是退让，
 是拿回 cgroup 给不了的东西**（managed IRQ、免 tick）。
 
+### 0.2 决策 / 执行对照表
+
+上表按「层」分，这张按「调整项」分——**决策者和执行机制是两件事**，两者的组合才说明
+一次调整实际怎么发生。读法：层 ① 在运行期完全不参与（定义上重启才生效，它只在开机时
+把候选核与 1G 大页的底座摆好）；**边界由人定，边界内的落点由控制器定**。
+
+| 调整项 | 决策者 | 执行机制 | 在 cgroup 里 | 生效 |
+|---|---|---|---|---|
+| **CPU** | | | | |
+| 池划分（核在 system/virt/spdk/vm 间搬） | **人**（编辑 plan） | `systemctl set-property AllowedCPUs` | ✓ | 即时 |
+| SPDK 池增减 | **人** | cpuset，受 ① 的 `cap` 上限约束 | ✓ | 即时（超 `cap` 需重启） |
+| VM 调度范围（换节点 / 收编 C→B） | **放置控制器** | scope 的 `AllowedCPUs` = `cpuset.cpus` | ✓ | 即时 |
+| vCPU 1:1 绑核 / 解绑 | **放置控制器** | **`sched_setaffinity(2)`** | ✗ | 即时 |
+| CPU 份额 | — | `cpu.weight`（A 级 10000 / B·C 级 100） | ✓ | — **无人在线调，见附录缺口** |
+| **内存** | | | | |
+| OS / 虚拟化服务预留 | **人** | `memory.min`@system/virt.slice | ✓ | 即时 |
+| VM 池预算与硬顶 | **人** | `memory.high` + `memory.max`@machine.slice | ✓ | 即时 |
+| per-VM 预留 | **人**（填 `mem_reserved_mb`） | scope 的 `MemoryMin` | ✓ | 即时 |
+| VM 内存落在哪个 NUMA 节点 | **放置控制器** | `AllowedMemoryNodes` = `cpuset.mems` → 内核 workqueue 异步 `do_migrate_pages` | ✓ | **异步**，几十秒–几分钟，且**不可取消** |
+| **VM 实际常驻多少（超分）** | **memtier 总控** | **QMP `memtier_set_policy` → QEMU 内 uffd-wp + io_uring** | **✗ 完全不经 cgroup** | 秒–分钟 |
+| 大页供给 | **人** | sysfs `node<N>/…/nr_hugepages`（2M 失败先 `compact_memory`） | ✗ | 2M 即时，1G 常需重启 |
+| 大页配额（SPDK vs VM） | **人** | `hugetlb.*.max` + `.rsvd.max` | ✓ | 即时 |
+| OOM 时杀谁 | **人**（优先级映射） | `memory.oom.group=1` + `oom_score_adj` | ✓（前者） | 即时 |
+
+**三个必须记住的口径**：
+
+1. **cgroup 做不到内存超分**。`memory.high` 只能节流与触发回收，而 VM 的匿名页在无 swap
+   主机上**不可回收**——顶到 high 只会卡住 QEMU 线程，最后全局 OOM 随机杀。「让 VM 少占
+   内存」只能由 memtier 在 QEMU 里做（uffd-wp 写保护冷段 → io_uring 写后端盘 →
+   `MADV_DONTNEED` 释放宿主页；缺页再 `UFFDIO_COPY` 填回，§3.7）。cgroup 在这条链上
+   **只贡献一个只读信号**：`machine.slice/memory.current` ÷ plan 预算 = VM 池挤占度，
+   超 80% 才计压，与 PSI、MemAvailable 取 max 合成压力。
+2. **cgroup 只能圈范围、不能定点**。vCPU 的精确绑定必须用线程亲和性，两者有硬性顺序
+   （扩池先改 cpuset 再 pin，缩池先解 pin 再缩 cpuset，否则 `sched_setaffinity` 撞上空
+   交集返回 EINVAL，§3.10.4）。
+3. **hugetlb 不进 memory 控制器**。6.7 上 `memory_hugetlb_accounting` 默认关闭，模式 C
+   VM 的主内存在大页池段核算、不计入 `memory.current`，VM 池预算只算它的 QEMU
+   overhead（§3.4）。口径混了会把账算重一遍。
+
+> **「层 ③」其实装了两个独立控制环**：放置控制器（CPU 落点 + 内存位置）与 memtier 总控
+> （内存容量），各跑各的 30s 拍子。二者只有单向让路——memtier 处于 evict 档时放置控制器
+> 整拍暂停，memtier 把 VM 池挤占度并进自己的压力——**没有共同目标函数**。已知的耦合风险
+> 见 §8（换节点期间新旧节点短暂各占一份，会推高 memtier 压力，而迁页已经不可取消）。
+
 | 问题 | 决策 | 理由 |
 |---|---|---|
 | CPU 隔离用什么 | **cgroup v2 cpuset 分区**（`cpuset.cpus.partition`），不以 `isolcpus` 为基础机制 | isolcpus 需重启、静态、全有全无；内核 6.7 的 `isolated` 分区在运行时提供等效隔离（脱离调度域、无负载均衡），正好支撑「拖拽即生效」 |
@@ -973,6 +1017,12 @@ xvirt-autotest 加 stage（plan validate/apply 幂等性、缩池阻塞、互斥
 - **`cpuset.mems` 迁页是异步且不可取消的**：写下去内核 workqueue 就开始搬，中途改主意
   只能再写回原节点（等于再搬一次）——控制器对「进行中」的 VM 不再下发任何新决策，
   超时也只标「部分迁移」不回滚。
+- **换节点与内存分层互相推高**：`cpuset.mems` 迁页期间新旧节点短暂各占一份，主机内存
+  瞬时接近翻倍 → 推高 memtier 的压力信号 → 进 evict 档 → 放置控制器整拍暂停，**但页已经
+  在搬了且不可取消**。现在只靠「placement 见到 evict 就停」这条单向让路兜着，两个环没有
+  共同目标函数（§0.2）。缓解：`max_move_gb` 压住单次规模；换节点准入已要求目标节点空闲
+  内存 ≥ resident×1.1；后续应让 memtier 在「有进行中迁移」时把该 VM 的挤占度排除在压力
+  合成之外，避免自激。
 - **迁页期间的 guest 毛刺**：每页一次 EPT 重建 + 迁页占用内存带宽；对延迟敏感 VM 应设
   `placement_source=manual` 锁死；`max_move_gb` 限制单次搬动规模。
 - **内核自动 NUMA 平衡与控制器打架**：主机 `kernel.numa_balancing=0`（xvirt-init
