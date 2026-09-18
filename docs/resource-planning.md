@@ -381,6 +381,40 @@ memory.max@machine.slice = MemTotal − OS 预留 − 虚拟化服务预留 − 
   停止轮询，否则被内核挪到允许核上空转）；② 兜底——改 core mask 重启 vhost target，
   依赖 inflight-shmfd 重连 + QEMU chardev `reconnect`，客户机不重启、仅短暂 IO 停顿。
 
+**低抖动启动档的落地（层 ①，落在 hyper-agent）**：
+
+改 grub 是**运行期**动作——主机已经装好、SPDK 池规模确定之后才谈得上开启动档，而装机
+程序早已退场。所以实现放在 hyper-agent（它本来就常驻主机、已经在写 sysctl drop-in 与
+systemd drop-in，对账框架现成）；**装机侧（lycan）只负责写首装默认值**，不参与后续变更。
+
+```
+写：/etc/default/grub.d/99-xvirt-resource-plan.cfg      # Ubuntu/Debian 的 grub.d 机制
+    # managed by xvirt resource plan
+    GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX isolcpus=managed_irq,<cap 候选核>
+                        nohz_full=<cap 候选核> rcu_nocbs=<cap 候选核> hugepagesz=1G hugepages=<N>"
+然后 update-grub
+```
+
+- **用 `GRUB_CMDLINE_LINUX` 而不是 `GRUB_CMDLINE_LINUX_DEFAULT`**：lycan 装机时改的是
+  后者（写串口控制台参数，`console=tty1 console=ttyS0,115200`），两个变量由 grub 拼接，
+  互不覆盖。反过来若也去改 `_DEFAULT`，下次装机或人工调串口就会把启动档冲掉。
+- **drop-in 而不是直接改 `/etc/default/grub`**：与 sysctl 的做法一致，带
+  `# managed by xvirt resource plan` 标记，便于识别归属、整段替换、一键摘除。
+- **对账口径是 `/proc/cmdline` 而不是配置文件**：配置写了不等于生效。reconcile 逐项比
+  「plan 期望 vs `/proc/cmdline` 实际」：
+  - 一致 → `unchanged`；
+  - 配置文件已更新但 cmdline 未含 → `pending_reboot`（UI 横幅「N 项待重启生效」）；
+  - 配置与 plan 不一致 → 重写 + `update-grub` → `pending_reboot`；
+  - `update-grub` 失败 → `failed`，**不改 plan 状态**，避免用户以为已生效。
+- **候选核按 `cap` 声明、不按当前 `pools.spdk.cpus`**：启动参数是静态的，写当前实际核
+  数会导致每次调 SPDK 池都要重启。写 `cap`（候选核上限），实际给几个仍由层 ② 的 cpuset
+  在其中决定（§3.1）。改 `cap` 才需要重启。
+- **护栏**：候选核不得覆盖全部在线 CPU（至少留一个 housekeeping CPU，否则 `nohz_full`
+  无处安放、系统不可用）；候选核与 system/virt 池不得重叠；`isolcpus` 声明的核不得并入
+  vm-shared（§3.1）。这三条进 §4.4 校验器，`validate` 阶段就拦住。
+- **可摘除**：`boot_profile` 关掉 = 删除 drop-in + `update-grub` + `pending_reboot`，
+  不留残留参数。
+
 **IRQ 与内核线程的诚实口径**：
 
 - SPDK/独占池核通过 irqbalance banned + 显式 affinity 驱离可迁移 IRQ；per-CPU
@@ -639,6 +673,10 @@ VM 转 C 允许跨节点；一台 12G 的 B 级 VM 因 N0 内存吃紧被搬到 
 - spdk 池变更时校验 isolated 前提：扫根下全部子 cgroup（含临时 scope / 容器运行时的组）
   的 `cpuset.cpus` 与 spdk 池无重叠；spdk 池规模不得超过候选核上限 `cap`（`spdk_over_cap`）；
   apply 后回读 `cpuset.cpus.partition`，非 `isolated` 即失败并原样上报原因字符串。
+- 低抖动启动档（层 ①，§3.8）：候选核 `cap` 不得覆盖全部在线 CPU（至少留 1 个
+  housekeeping CPU）；候选核与 system / virt 池不得重叠；`isolcpus` 候选核不得并入
+  vm-shared 共享池（脱离调度域，无负载均衡）。校验按 `/proc/cmdline` 回读的**实际**
+  候选核集合做，plan 里的 `cap` 与实际不一致 → 报 pending_reboot 而非 applied。
 - 大页：目标值 < 当前 `nr - free`（在用）→ 拒绝；1G 增量运行时分配失败 → 降级为
   pending-reboot 而非失败。
 - 内存预算不等式（§3.4）成立且安全余量 ≥ 4%（残差按观测峰值）；`machine.slice` 的
@@ -877,7 +915,7 @@ xvirt_placement_ / xvirt_rdt_` 前缀，并放行 `vcpu / from / to / part / lev
 | **P2 · VM 落位** | vm_config 放置列 + PATCH 扩展；独占绑定（VM→核拖拽 + query-cpus-fast pin）；单节点自动放置 + 显式 vNUMA；模式 C 大页后端；vm_direct collector | ferrovirt、lictor（backend/pin）、hyper-agent（config 传递）、前端（VM 放置 UI + vNUMA 图） |
 | **P2.5 · 自动放置** | §3.10 放置控制器：启动准入 A/B/C + 再平衡（解绑/绑核/换节点/收编）+ 守卫；scope 属性热改 + numa_maps 进度；`placement_event` 审计；**先以 `mode=advise` 上线观察再切 apply**；§6.1 第二/三档可观测性；验证项 #1–#4 | hyper-agent（controller + RDT）、lictor（vm_apply_placement / pin）、ferrovirt（plan 字段 / 事件 / REST）、前端（自动放置卡 + tier 徽标 + 锁定 + 节点监控条） |
 | **P3 · SPDK** | spdk.slice + isolated 分区 + IRQ/workqueue 驱离 + hugetlb 圈占 + 候选核上限 + SPDK 板 | hyper-agent、前端 |
-| **P3.5 · 低抖动启动档**（层 ①） | grub drop-in 写 `isolcpus=managed_irq,<spdk cpus> nohz_full=… rcu_nocbs=…` + 1G 大页启动预留；开机回读 `/proc/cmdline` 对账；UI 给「需重启」与「SPDK 核上有 managed IRQ」提示。**落点仓库待定**（见 §8） | 装机侧（krait / lycan 二选一）、hyper-agent（对账）、前端 |
+| **P3.5 · 低抖动启动档**（层 ①） | hyper-agent 写 grub drop-in（`isolcpus=managed_irq,<spdk cpus> nohz_full=… rcu_nocbs=…` + 1G 大页启动预留）+ `update-grub`；回读 `/proc/cmdline` 幂等对账；UI 给「需重启」与「SPDK 核上有 managed IRQ」提示（§3.8）。装机侧只写首装默认值 | hyper-agent（实现 + 对账）、lycan（首装默认值）、前端 |
 | **P4 · memtier 融合** | 总控读 plan 水位线/预算（替换环境变量常量）；VM 池预算项进压力合成；可选热集 memory.min 同步；水位线 UI 编辑 | hyper-agent（controller.py）、ferrovirt、前端 |
 
 P0/P1 是主体（P1 里 per-VM scope 是全方案的地基，也同时解锁 per-VM 指标直采）；
@@ -914,10 +952,10 @@ xvirt-autotest 加 stage（plan validate/apply 幂等性、缩池阻塞、互斥
   偏大，口径说明要写进 tooltip，避免被当成泄漏排查。
 - **低抖动启动档目前是空壳**：`pools.spdk.boot_profile` 有 plan 字段、有 UI 勾选框、
   diff 也标了 `reboot: true`，但 `apply.py` 收到它只吐一条 `pending_reboot`，**没有任何
-  写 grub 的代码**；且文档此前指定的落点 `xvirt-init` 在现有仓库里并不存在。用户勾上、
-  看到「待重启」、重启完什么也没变——这是会误导人的假开关。在 P3.5 落地前，UI 应把它
-  置灰并注明「未实现」，而不是让它可勾。真正有写 grub 能力的是装机侧的 krait 与 lycan，
-  二选一需先定。
+  写 grub 的代码**（文档此前指定的落点 `xvirt-init` 在现有仓库里也并不存在）。用户勾上、
+  看到「待重启」、重启完什么也没变——这是会误导人的假开关。**在 P3.5 落地前，UI 应把它
+  置灰并注明「未实现」**，而不是让它可勾。落点已定为 hyper-agent（§3.8），装机侧只写
+  首装默认值。
 - **层 ① 与层 ② 的边界要在校验器里守住**：开了启动档后，`isolcpus` 声明的候选核脱离
   调度域，**不能并入 vm-shared 共享池**（无负载均衡会让共享 VM 堆在一个核上），只能给
   SPDK 或独占绑核的 vCPU。校验器要按 `/proc/cmdline` 回读的实际候选核集合校验池划分，
@@ -969,7 +1007,8 @@ xvirt-autotest 加 stage（plan validate/apply 幂等性、缩池阻塞、互斥
 - **层 ① 只落地了 sysctl 那条**：`kernel.numa_balancing=0` 已实现；低抖动启动档
   （`isolcpus=managed_irq` / `nohz_full` / `rcu_nocbs` 的 grub drop-in）与 1G 大页的
   启动预留均未实现，`boot_profile` 是只读不写的空字段（见 §8）。后果：SPDK 核上若有
-  内核态 NVMe/网卡的 managed IRQ，当前隔离是不完整的。
+  内核态 NVMe/网卡的 managed IRQ，当前隔离是不完整的。**落点已定：hyper-agent 实现 +
+  对账，lycan 只写首装默认值，设计见 §3.8；待开工。**
 - `cpu.weight` 仍是 A 级 10000 / B·C 级 100 两个常量，未按优先级与实测排队延迟动态
   调整——**紧张档下 `priority` 对 CPU 份额不起作用**（§1 非目标里的「CPU 时间片精细
   QoS」尚未开工）。
