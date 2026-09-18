@@ -25,3 +25,6 @@
 /xvirt-libs/
 /xvirt-snapmig/
 /xvirt-tools/
+
+# macOS
+.DS_Store

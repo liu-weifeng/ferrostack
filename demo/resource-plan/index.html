@@ -1,0 +1,827 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<style>
+  /* 独立 demo 的基础 reset（与线上原型宿主一致）*/
+  html { color-scheme: light dark; }
+  body { margin:0; }
+  img { max-width:100%; }
+  [hidden] { display:none !important; }
+  /* 主题切换按钮（仅 demo 用）*/
+  .theme-fab { position:fixed; right:18px; bottom:18px; z-index:99; width:40px; height:40px; border-radius:50%;
+               border:1px solid var(--line2); background:var(--surface); color:var(--ink); font-size:18px;
+               box-shadow:0 2px 8px rgba(0,0,0,.18); display:flex; align-items:center; justify-content:center; }
+  .theme-fab:hover { border-color:var(--accent); }
+</style>
+<title>xvirt 资源规划原型</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  :root {
+    --bg:#f4f6f8; --surface:#ffffff; --surface2:#edf0f4; --ink:#1d2430; --muted:#5b6574;
+    --line:#dfe4ec; --line2:#c3ccd8; --accent:#0e7490; --accent-soft:#e0f0f4;
+    --ok:#15803d; --warn:#b45309; --warn-bg:#fdf3e3; --bad:#b42318; --bad-bg:#fbeae8;
+    --p-os:#ad4a77; --p-virt:#4a8ee6; --p-spdk:#7434d6; --p-vm:#178f4e; --p-ded:#d98a0a;
+    --hp2m:#12967d; --hp1g:#0a5a8f; --kern:#8a93a3; --swap:#64748b;
+    --shadow:0 1px 3px rgba(15,23,42,.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#12151b; --surface:#1a1e26; --surface2:#232833; --ink:#e3e7ee; --muted:#98a2b3;
+      --line:#2b313c; --line2:#3d4552; --accent:#45b8cf; --accent-soft:#153840;
+      --ok:#4cc27a; --warn:#e8a04c; --warn-bg:#33270f; --bad:#ef7365; --bad-bg:#3a1611;
+      --p-os:#ad4a77; --p-virt:#4a8ee6; --p-spdk:#7d43dd; --p-vm:#0f7a41; --p-ded:#cd7f08;
+      --hp2m:#12967d; --hp1g:#0d6ba6; --kern:#77808f; --swap:#7b8699;
+      --shadow:0 1px 3px rgba(0,0,0,.4);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#12151b; --surface:#1a1e26; --surface2:#232833; --ink:#e3e7ee; --muted:#98a2b3;
+    --line:#2b313c; --line2:#3d4552; --accent:#45b8cf; --accent-soft:#153840;
+    --ok:#4cc27a; --warn:#e8a04c; --warn-bg:#33270f; --bad:#ef7365; --bad-bg:#3a1611;
+    --p-os:#ad4a77; --p-virt:#4a8ee6; --p-spdk:#7d43dd; --p-vm:#0f7a41; --p-ded:#cd7f08;
+    --hp2m:#12967d; --hp1g:#0d6ba6; --kern:#77808f; --swap:#7b8699;
+    --shadow:0 1px 3px rgba(0,0,0,.4);
+  }
+  * { box-sizing:border-box; }
+  body { background:var(--bg); color:var(--ink); font:14px/1.65 "Noto Sans SC","PingFang SC",sans-serif;
+         -webkit-font-smoothing:antialiased; }
+  .mono { font-family:"JetBrains Mono",monospace; }
+  button { font:inherit; color:inherit; cursor:pointer; }
+  button:focus-visible, [tabindex]:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
+
+  .shell { max-width:1280px; margin:0 auto; padding:0 20px 60px; }
+
+  /* ── 页头（主机详情语境） ── */
+  .crumbs { font-size:12.5px; color:var(--muted); padding:14px 2px 0; }
+  .crumbs b { color:var(--ink); font-weight:600; }
+  .tabs { display:flex; gap:2px; margin:10px 0 0; border-bottom:1px solid var(--line); }
+  .tab { padding:7px 16px; font-size:13.5px; color:var(--muted); border:0; background:none;
+         border-bottom:2px solid transparent; }
+  .tab.on { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
+
+  /* ── 工具栏 ── */
+  .toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:16px 0 14px; }
+  .toolbar h1 { font-size:17px; font-weight:700; margin:0 8px 0 0; }
+  .chip { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--line);
+          background:var(--surface); border-radius:999px; padding:2px 10px; font-size:12px;
+          color:var(--muted); white-space:nowrap; }
+  .chip .sw { width:9px; height:9px; border-radius:2px; flex:none; }
+  .sp { flex:1; }
+  .btn { border:1px solid var(--line2); background:var(--surface); border-radius:7px;
+         padding:5px 14px; font-size:13px; font-weight:500; }
+  .btn:hover { border-color:var(--accent); }
+  .btn.pri { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .btn.ghost { border-color:transparent; color:var(--muted); }
+  .btn:disabled { opacity:.5; cursor:not-allowed; }
+  .seg-ctl { display:inline-flex; border:1px solid var(--line2); border-radius:7px; overflow:hidden; }
+  .seg-ctl .btn { border:0; border-radius:0; }
+  .seg-ctl .btn.on { background:var(--accent); color:#fff; }
+
+  .badge { display:inline-block; font-size:11px; font-weight:700; border-radius:4px; padding:0 7px; }
+  .b-now { background:var(--accent-soft); color:var(--accent); }
+  .b-vm  { background:var(--warn-bg); color:var(--warn); }
+  .b-boot{ background:var(--surface2); color:var(--muted); border:1px solid var(--line2); }
+  .b-hot { background:var(--accent-soft); color:var(--accent); }
+
+  .banner { display:flex; gap:10px; align-items:center; border:1px solid var(--line2);
+            border-left:3px solid var(--warn); background:var(--warn-bg); border-radius:8px;
+            padding:8px 14px; margin:0 0 14px; font-size:13px; }
+  .banner button { margin-left:auto; border:0; background:none; color:var(--muted); font-size:15px; }
+
+  /* ── 布局 ── */
+  .grid { display:grid; grid-template-columns:minmax(0,1fr) 320px; gap:16px; align-items:start; }
+  @media (max-width:960px){ .grid { grid-template-columns:minmax(0,1fr); } }
+  .col { display:flex; flex-direction:column; gap:16px; min-width:0; }
+  .card { background:var(--surface); border:1px solid var(--line); border-radius:12px;
+          padding:16px 18px; box-shadow:var(--shadow); }
+  .card h2 { font-size:14px; font-weight:700; margin:0 0 4px; display:flex; align-items:center; gap:8px; }
+  .card h2 .hint { font-size:11.5px; color:var(--muted); font-weight:400; }
+  .sub { font-size:12px; color:var(--muted); }
+
+  /* ── 归户条 ── */
+  .attr-bar { display:flex; gap:2px; height:26px; border-radius:6px; overflow:hidden;
+              background:var(--surface2); margin:10px 0 6px; }
+  .attr-bar .as { position:relative; min-width:3px; }
+  .attr-legend { display:flex; flex-wrap:wrap; gap:4px 16px; font-size:12px; color:var(--muted); }
+  .attr-legend .it { display:inline-flex; align-items:center; gap:6px; }
+  .attr-legend .sw { width:9px; height:9px; border-radius:2px; }
+  .attr-legend b { color:var(--ink); font-weight:600; font-variant-numeric:tabular-nums; }
+  .svc-detail { margin-top:8px; padding-top:8px; border-top:1px dashed var(--line);
+                display:flex; flex-wrap:wrap; gap:4px 18px; font-size:12px; color:var(--muted); }
+
+  /* ── CPU 拓扑 ── */
+  .numa { border:1px solid var(--line); border-radius:10px; padding:10px 14px 12px; margin-top:10px; }
+  .numa-cap { display:flex; gap:14px; flex-wrap:wrap; font-size:11.5px; color:var(--muted); margin-bottom:10px; }
+  .numa-cap b { color:var(--ink); font-family:"JetBrains Mono",monospace; font-size:12px; }
+  .cores { display:flex; flex-wrap:wrap; gap:9px; }
+  .core { display:flex; flex-direction:column; gap:3px; align-items:center; border-radius:6px; padding:2px; }
+  .core.sel { outline:2px solid var(--accent); outline-offset:1px; }
+  .core.drop-ok { outline:2px dashed var(--ok); outline-offset:1px; }
+  .core.drop-no { outline:2px dashed var(--bad); outline-offset:1px; }
+  .core .tag { font-size:9.5px; font-family:"JetBrains Mono",monospace; line-height:1; height:10px;
+               color:var(--p-ded); font-weight:600; max-width:46px; overflow:hidden; }
+  .thr { width:42px; height:24px; border-radius:4px; border:1.5px solid; position:relative; overflow:hidden;
+         font-family:"JetBrains Mono",monospace; font-size:10px; text-align:center; color:var(--ink);
+         background:var(--surface2); }
+  .thr .u { position:absolute; left:0; right:0; bottom:0; opacity:.35; transition:height .6s; }
+  .thr .n { position:relative; z-index:1; }
+  .po { border-color:var(--p-os); }   .po .u { background:var(--p-os); }
+  .pv { border-color:var(--p-virt); } .pv .u { background:var(--p-virt); }
+  .ps { border-color:var(--p-spdk); border-style:dashed; } .ps .u { background:var(--p-spdk); }
+  .pm { border-color:var(--p-vm); }   .pm .u { background:var(--p-vm); }
+  .pd { border-color:var(--p-ded); background:color-mix(in srgb,var(--p-ded) 14%,var(--surface)); }
+  .pd .u { background:var(--p-ded); }
+  .pending .thr { background:repeating-linear-gradient(45deg, var(--surface2) 0 5px,
+                   color-mix(in srgb,var(--accent) 25%,var(--surface)) 5px 10px) !important; }
+  .legend { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; padding-top:10px;
+            border-top:1px dashed var(--line); }
+  .pool-chip { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--line2);
+               background:var(--surface); border-radius:999px; padding:3px 12px; font-size:12px; }
+  .pool-chip .sw { width:10px; height:10px; border-radius:2px; }
+  .pool-chip.droppable { border-style:dashed; }
+  .pool-chip.drop-ok { border-color:var(--ok); background:var(--accent-soft); }
+
+  /* ── 内存条 ── */
+  .membar { display:flex; gap:2px; height:32px; border-radius:6px; overflow:hidden;
+            background:var(--surface); border:1px solid var(--line2); margin:8px 0 4px;
+            user-select:none; -webkit-user-select:none; }
+  .gauge, .cores { user-select:none; -webkit-user-select:none; }
+  .mseg { position:relative; min-width:2px; }
+  .mseg span { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+               font-family:"JetBrains Mono",monospace; font-size:10px; color:#fff;
+               text-shadow:0 1px 2px rgba(0,0,0,.45); white-space:nowrap; overflow:hidden; }
+  .mseg.kern { background:repeating-linear-gradient(45deg, var(--kern) 0 6px,
+                 color-mix(in srgb,var(--kern) 70%,var(--surface)) 6px 12px); }
+  .mseg.free { background:var(--surface2); }
+  .mseg.free span { color:var(--muted); text-shadow:none; }
+  .grip { width:8px; flex:none; background:var(--surface); cursor:col-resize; position:relative; touch-action:none; }
+  .grip::after { content:""; position:absolute; left:2.5px; right:2.5px; top:8px; bottom:8px;
+                 border-left:1.5px solid var(--muted); border-right:1.5px solid var(--muted); }
+  .grip:hover::after, .grip.on::after { border-color:var(--accent); }
+  .mem-note { display:flex; flex-wrap:wrap; gap:4px 16px; font-size:11.5px; color:var(--muted); }
+  .mem-note b { color:var(--ink); font-variant-numeric:tabular-nums; font-weight:600; }
+
+  /* ── memtier ── */
+  .gauge { position:relative; height:12px; border-radius:6px; background:var(--surface2);
+           border:1px solid var(--line); margin:14px 0 4px; }
+  .gauge .fill { position:absolute; left:0; top:0; bottom:0; background:var(--accent); border-radius:6px 0 0 6px; opacity:.75; }
+  .gtick { position:absolute; top:-5px; bottom:-5px; width:10px; margin-left:-5px; cursor:col-resize; touch-action:none; }
+  .gtick::after { content:""; position:absolute; left:4px; top:0; bottom:0; width:2px; }
+  .gtick.evict::after { background:var(--warn); }
+  .gtick.back::after { background:var(--ok); }
+  .gtick-lab { font-size:11px; color:var(--muted); display:flex; gap:18px; }
+  .gtick-lab b { color:var(--ink); font-variant-numeric:tabular-nums; }
+  .mt-row { display:grid; grid-template-columns:110px 58px minmax(0,1fr) 168px; gap:10px; align-items:center;
+            padding:7px 0; border-bottom:1px dashed var(--line); font-size:12.5px; }
+  .mt-row:last-child { border-bottom:0; }
+  .mt-bar { display:flex; gap:2px; height:15px; border-radius:4px; overflow:hidden; background:var(--surface2); }
+  .mt-res { background:var(--p-vm); }
+  .mt-swp { background:repeating-linear-gradient(45deg, var(--swap) 0 5px,
+              color-mix(in srgb,var(--swap) 45%,var(--surface)) 5px 10px); }
+  .mt-num { font-family:"JetBrains Mono",monospace; font-size:11px; color:var(--muted); text-align:right;
+            font-variant-numeric:tabular-nums; }
+  .prio { border:1px solid var(--line2); background:var(--surface); border-radius:5px;
+          font-size:11px; padding:1px 6px; color:var(--muted); }
+
+  /* ── 右栏 ── */
+  .vm-row { display:flex; align-items:center; gap:8px; padding:8px 6px; border-bottom:1px dashed var(--line);
+            border-radius:6px; font-size:12.5px; cursor:pointer; }
+  .vm-row:hover { background:var(--surface2); }
+  .vm-row .dot { width:8px; height:8px; border-radius:50%; flex:none; }
+  .vm-row .nm { font-weight:600; }
+  .vm-row .cs { display:flex; gap:4px; flex-wrap:wrap; margin-left:auto; justify-content:flex-end; }
+  .mini { font-size:10.5px; border:1px solid var(--line); border-radius:4px; padding:0 5px; color:var(--muted);
+          white-space:nowrap; }
+  .chg { display:flex; gap:8px; align-items:baseline; padding:6px 2px; border-bottom:1px dashed var(--line);
+         font-size:12.5px; }
+  .chg .undo { margin-left:auto; border:0; background:none; color:var(--muted); font-size:12px; }
+  .chg .undo:hover { color:var(--bad); }
+  .issue { font-size:12.5px; padding:5px 8px; border-radius:6px; margin:4px 0; }
+  .issue.block { background:var(--bad-bg); color:var(--bad); }
+  .issue.warn { background:var(--warn-bg); color:var(--warn); }
+  .issue.ok { background:var(--accent-soft); color:var(--accent); }
+
+  /* ── VM 视图 ── */
+  .vhead { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:16px 0 14px; }
+  .vhead h1 { font-size:18px; margin:0; }
+  .back { border:0; background:none; color:var(--accent); font-size:13px; padding:0; }
+  .radio-row { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
+  .radio-card { border:1.5px solid var(--line2); border-radius:8px; padding:8px 14px; font-size:13px;
+                background:var(--surface); text-align:left; }
+  .radio-card.on { border-color:var(--accent); background:var(--accent-soft); }
+  .radio-card:disabled { opacity:.45; }
+  .radio-card small { display:block; font-size:11px; color:var(--muted); }
+  .vcpu-chip { display:inline-flex; align-items:center; gap:5px; border:1.5px solid var(--p-ded);
+               background:color-mix(in srgb,var(--p-ded) 12%,var(--surface)); border-radius:6px;
+               padding:3px 10px; font-family:"JetBrains Mono",monospace; font-size:12px; cursor:grab; }
+  .vcpu-chip.pinned { border-style:solid; opacity:.55; cursor:default; }
+  .vcpu-chip[draggable="true"]:active { cursor:grabbing; }
+  .thr.pin-own { background:color-mix(in srgb,var(--p-ded) 25%,var(--surface)); }
+  .thr.pin-oth { opacity:.5; }
+  .thr .px { position:absolute; right:1px; top:0; z-index:2; border:0; background:none; color:var(--bad);
+             font-size:10px; line-height:1; padding:1px; cursor:pointer; }
+  .vnode-card { border:1px solid var(--line2); border-left:4px solid var(--p-virt); border-radius:8px;
+                padding:10px 12px; font-size:12.5px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .vnode-card input, .vnode-card select, .inspector select, .inspector input {
+    font:inherit; font-size:12.5px; color:var(--ink); background:var(--surface); border:1px solid var(--line2);
+    border-radius:5px; padding:2px 6px; width:64px; }
+  .vnode-card select { width:auto; }
+  .num-in { width:70px !important; }
+
+  /* ── toast ── */
+  #toasts { position:fixed; right:18px; bottom:18px; display:flex; flex-direction:column; gap:8px; z-index:50; }
+  .toast { background:var(--ink); color:var(--bg); border-radius:8px; padding:9px 16px; font-size:13px;
+           box-shadow:0 4px 16px rgba(0,0,0,.25); max-width:360px; }
+  .toast.err { background:var(--bad); color:#fff; }
+  .toast.ok { background:var(--ok); color:#fff; }
+
+  .foot { margin-top:26px; font-size:11.5px; color:var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="shell"><div id="app"></div>
+<div class="foot">交互原型 · 数据为模拟，无后端 —— 对应设计稿 <span class="mono">docs/resource-planning.md</span> §5。查看模式展示实时叠加；「编辑」后可拖拽：核→池图例、VM 行→核、内存段手柄、水位线刻度；VM 视图内 vCPU→线程格。</div>
+</div>
+<div id="toasts"></div>
+
+<script>
+"use strict";
+/* ───────────────────────── 数据 ───────────────────────── */
+const NODE_MEM = 128, KERN_G = 6, SAFETY_G = 5, HP2M_USED = {0:2,1:0};
+const POOLS = { system:{n:"操作系统",cls:"po",v:"--p-os"}, virt:{n:"虚拟化服务",cls:"pv",v:"--p-virt"},
+                spdk:{n:"SPDK（隔离）",cls:"ps",v:"--p-spdk"}, vm:{n:"虚拟机共享",cls:"pm",v:"--p-vm"} };
+const BACKENDS = { anon:"匿名（memtier）", memfd:"共享 memfd（vhost-user）", hp2m:"大页 2M（共享）", hp1g:"大页 1G（共享）" };
+const coreThreads = c => [c, c+16];
+const coreNode = c => c < 8 ? 0 : 1;
+const nodeCores = n => n===0 ? [0,1,2,3,4,5,6,7] : [8,9,10,11,12,13,14,15];
+
+const VMS = {
+  "web-01":     { vcpus:4, memGB:8,  state:"running", petrel:false },
+  "db-core-01": { vcpus:8, memGB:16, state:"running", petrel:false },
+  "oa-file-01": { vcpus:4, memGB:8,  state:"running", petrel:true  },
+  "ai-train-02":{ vcpus:8, memGB:4,  state:"running", petrel:false, mt:{res:0.8,swp:3.2} },
+  "batch-02":   { vcpus:4, memGB:8,  state:"running", petrel:false, mt:{res:4.4,swp:3.6} },
+  "dev-stop-01":{ vcpus:2, memGB:4,  state:"shutoff", petrel:false },
+};
+const basePlan = {
+  corePool: {0:"system",8:"system",1:"virt",9:"virt",2:"spdk",
+             3:"vm",4:"vm",5:"vm",6:"vm",7:"vm",10:"vm",11:"vm",12:"vm",13:"vm",14:"vm",15:"vm"},
+  mem: { 0:{os:4,virt:8,hp2m:16,hp1g:16}, 1:{os:4,virt:4,hp2m:16,hp1g:16} },
+  wm: { evict:10, back:50 }, spdkBoot:false,
+  place: {
+    "web-01":     { mode:"dedicated", pins:{0:5,1:21,2:6,3:22}, numa:"auto", node:0, backend:"anon", memtier:false, prio:"normal" },
+    "db-core-01": { mode:"shared", pins:{}, numa:"manual", node:0, backend:"hp1g", memtier:false, prio:"high",
+                    vnodes:[{vcpus:4,memGB:8,host:0},{vcpus:4,memGB:8,host:1}] },
+    "oa-file-01": { mode:"shared", pins:{}, numa:"auto", node:1, backend:"memfd", memtier:false, prio:"normal" },
+    "ai-train-02":{ mode:"shared", pins:{}, numa:"auto", node:0, backend:"anon", memtier:true, prio:"low" },
+    "batch-02":   { mode:"shared", pins:{}, numa:"auto", node:1, backend:"anon", memtier:true, prio:"normal" },
+    "dev-stop-01":{ mode:"shared", pins:{}, numa:"auto", node:0, backend:"anon", memtier:false, prio:"normal" },
+  },
+};
+const clone = o => JSON.parse(JSON.stringify(o));
+
+const S = { route:"host", edit:false, applied:clone(basePlan), draft:null, sel:new Set(),
+            vmDraft:null, showSvc:false, issues:null, pendBoot:[], util:{} };
+const P = () => S.edit ? S.draft : S.applied;
+
+/* util 模拟 */
+function poolOf(plan,c){ return plan.corePool[c]; }
+function dedOwner(plan,c){
+  for(const [id,pl] of Object.entries(plan.place))
+    if(pl.mode==="dedicated" && Object.values(pl.pins).some(t=>t===c||t===c+16||Math.min(t,t-16)===c)) {
+      if(Object.values(pl.pins).some(t=>(t<16?t:t-16)===c)) return id;
+    }
+  return null;
+}
+function initUtil(){ for(let cpu=0;cpu<32;cpu++){ const c=cpu%16, p=poolOf(S.applied,c);
+  const base = p==="spdk"?100 : dedOwner(S.applied,c)?78 : p==="system"?18 : p==="virt"?38 : 32;
+  S.util[cpu] = p==="spdk"?100 : Math.max(3, base + Math.round(Math.random()*20-10)); } }
+initUtil();
+setInterval(()=>{ if(document.hidden||S.route!=="host") return;
+  for(let cpu=0;cpu<32;cpu++){ const c=cpu%16;
+    if(poolOf(P(),c)==="spdk"){ S.util[cpu]=100; continue; }
+    S.util[cpu]=Math.min(98,Math.max(2,S.util[cpu]+Math.round(Math.random()*14-7))); }
+  document.querySelectorAll(".thr[data-cpu]").forEach(el=>{
+    const u=el.querySelector(".u"); if(u) u.style.height=S.util[+el.dataset.cpu]+"%"; });
+  document.querySelectorAll("[data-poolutil]").forEach(el=>{
+    const n=+el.dataset.poolutil, cpus=nodeCores(n).filter(c=>poolOf(P(),c)==="vm").flatMap(coreThreads);
+    const avg=Math.round(cpus.reduce((s,c)=>s+S.util[c],0)/Math.max(1,cpus.length));
+    el.textContent="vm 池 "+avg+"%"; });
+},2500);
+
+/* ───────────────────────── 派生计算 ───────────────────────── */
+function hp1gUsed(node){ let used = node===0?4:0;                       // SPDK 圈占 4G@node0
+  for(const [id,pl] of Object.entries(P().place)){ if(VMS[id].state!=="running"||pl.backend!=="hp1g") continue;
+    if(pl.numa==="manual"&&pl.vnodes) pl.vnodes.forEach(v=>{ if(v.host===node) used+=v.memGB; });
+    else if(pl.node===node) used+=VMS[id].memGB; } return used; }
+function vmPoolBudget(node){ const m=P().mem[node];
+  return NODE_MEM - KERN_G - SAFETY_G - m.os - m.virt - m.hp2m - m.hp1g; }
+function vmPoolUsed(node){ let u=0;
+  for(const [id,pl] of Object.entries(P().place)){ const vm=VMS[id];
+    if(vm.state!=="running"||pl.backend==="hp1g"||pl.backend==="hp2m") continue;
+    const g = vm.mt ? vm.mt.res : vm.memGB;
+    if(pl.numa==="manual"&&pl.vnodes) pl.vnodes.forEach(v=>{ if(v.host===node) u+=g*(v.memGB/vm.memGB); });
+    else if(pl.node===node) u+=g; } return Math.round(u*10)/10; }
+function dedCores(plan){ const m={}; for(const [id,pl] of Object.entries(plan.place)){
+  if(pl.mode!=="dedicated") continue;
+  Object.values(pl.pins).forEach(t=>{ m[t<16?t:t-16]=id; }); } return m; }
+function pinnedBy(plan,thr){ for(const [id,pl] of Object.entries(plan.place))
+  for(const [v,t] of Object.entries(pl.pins)) if(t===thr) return {vm:id,v:+v}; return null; }
+
+/* ───────────────────────── 变更 diff ───────────────────────── */
+function computeChanges(){
+  if(!S.edit) return [];
+  const a=S.applied, d=S.draft, out=[];
+  for(const c of Object.keys(d.corePool)) if(d.corePool[c]!==a.corePool[c])
+    out.push({k:"core",c:+c,label:`核 ${c}·${+c+16} → ${POOLS[d.corePool[c]].n}`,badge:"now"});
+  for(const n of [0,1]) for(const f of ["os","virt","hp2m","hp1g"]) if(d.mem[n][f]!==a.mem[n][f])
+    out.push({k:"mem",n:+n,f,label:`NUMA${n} ${{os:"OS 预留",virt:"虚拟化预留",hp2m:"大页 2M",hp1g:"大页 1G"}[f]} ${a.mem[n][f]}G → ${d.mem[n][f]}G`,
+              badge:f==="hp1g"?"boot":"now"});
+  if(d.wm.evict!==a.wm.evict) out.push({k:"wm",f:"evict",label:`下刷水位 ${a.wm.evict}% → ${d.wm.evict}%`,badge:"now"});
+  if(d.wm.back!==a.wm.back) out.push({k:"wm",f:"back",label:`回血水位 ${a.wm.back}% → ${d.wm.back}%`,badge:"now"});
+  if(d.spdkBoot!==a.spdkBoot) out.push({k:"boot",label:`低抖动启动档 ${d.spdkBoot?"开启":"关闭"}`,badge:"boot"});
+  for(const id of Object.keys(d.place)){ const pa=a.place[id], pd=d.place[id];
+    if(JSON.stringify(pa.pins)!==JSON.stringify(pd.pins)||pa.mode!==pd.mode)
+      out.push({k:"place",id,label: pd.mode==="dedicated"
+        ? `${id} 独占绑定 核 ${[...new Set(Object.values(pd.pins).map(t=>t<16?t:t-16))].join(",")}`
+        : `${id} 取消独占`, badge: VMS[id].state==="running"?"hot":"now"}); }
+  return out;
+}
+function revertChange(ch){
+  const a=S.applied, d=S.draft;
+  if(ch.k==="core") d.corePool[ch.c]=a.corePool[ch.c];
+  else if(ch.k==="mem") d.mem[ch.n][ch.f]=a.mem[ch.n][ch.f];
+  else if(ch.k==="wm") d.wm[ch.f]=a.wm[ch.f];
+  else if(ch.k==="boot") d.spdkBoot=a.spdkBoot;
+  else if(ch.k==="place") d.place[ch.id]=clone(a.place[ch.id]);
+  S.issues=null; render();
+}
+
+/* ───────────────────────── 校验 ───────────────────────── */
+function validate(plan){
+  const iss=[]; const cnt=p=>Object.values(plan.corePool).filter(x=>x===p).length;
+  if(cnt("system")<2) iss.push({lv:"block",msg:"操作系统池少于 2 个物理核"});
+  if(cnt("virt")<2) iss.push({lv:"block",msg:"虚拟化服务池少于 2 个物理核"});
+  const ded=dedCores(plan);
+  for(const [c,vm] of Object.entries(ded)) if(plan.corePool[c]!=="vm"&&VMS[vm].state==="running")
+    iss.push({lv:"block",msg:`核 ${c} 被运行中 ${vm} 独占绑定，不能移出虚拟机池（先解绑/迁移/关机）`});
+  for(const n of [0,1]){
+    const u1g=hp1gUsed(n); if(plan.mem[n].hp1g<u1g)
+      iss.push({lv:"block",msg:`NUMA${n} 大页 1G 收缩到 ${plan.mem[n].hp1g}G，低于在用 ${u1g}G（VM/SPDK 占用）`});
+    if(plan.mem[n].hp2m<HP2M_USED[n])
+      iss.push({lv:"block",msg:`NUMA${n} 大页 2M 低于在用 ${HP2M_USED[n]}G`});
+    const bud=vmPoolBudget(n), used=vmPoolUsed(n);
+    if(bud<used) iss.push({lv:"block",msg:`NUMA${n} VM 池预算 ${bud}G 低于运行中占用 ${used}G`});
+    else if(bud<used*1.2) iss.push({lv:"warn",msg:`NUMA${n} VM 池预算余量不足 20%（${used}G / ${bud}G）`});
+  }
+  if(plan.wm.evict>=plan.wm.back) iss.push({lv:"block",msg:"下刷水位必须低于回血水位"});
+  return iss;
+}
+
+/* ───────────────────────── 渲染 ───────────────────────── */
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function render(){ $("#app").innerHTML = S.route==="host" ? hostView() : vmView(S.route); }
+
+function headerHtml(sub){
+  return `<div class="crumbs">主机 <b>node-123</b> · 192.168.2.123 ${sub?("› "+sub):""}</div>
+  <div class="tabs">${["概览","监控","硬件","存储"].map(t=>`<button class="tab">${t}</button>`).join("")}
+    <button class="tab on">资源规划</button></div>`;
+}
+
+/* ── 主机全局视图 ── */
+function hostView(){
+  const plan=P(), chgs=computeChanges();
+  const isolated=Object.values(plan.corePool).filter(p=>p==="spdk").length;
+  const hpTot=[0,1].reduce((s,n)=>s+plan.mem[n].hp2m+plan.mem[n].hp1g,0);
+  const resv=[0,1].reduce((s,n)=>s+plan.mem[n].os+plan.mem[n].virt,0);
+  return headerHtml("") + `
+  <div class="toolbar">
+    <h1>资源规划</h1>
+    <span class="chip">32 CPU · 2 NUMA</span>
+    <span class="chip"><span class="sw" style="background:var(--p-spdk)"></span>隔离 ${isolated}C</span>
+    <span class="chip">大页 ${hpTot}G</span><span class="chip">预留 ${resv}G</span>
+    <span class="sp"></span>
+    ${S.edit ? applyBar(chgs) : `<div class="seg-ctl"><button class="btn on">查看</button>
+      <button class="btn" data-act="edit">编辑</button></div>`}
+  </div>
+  ${S.pendBoot.length?`<div class="banner">⟳ ${S.pendBoot.length} 项待主机重启后生效：${esc(S.pendBoot.join("；"))}
+     <button data-act="dismiss-banner" aria-label="关闭">×</button></div>`:""}
+  <div class="grid"><div class="col">
+    ${attrCard()} ${cpuCard(plan)} ${memCard(plan)} ${memtierCard(plan)} ${spdkCard(plan)}
+  </div><div class="col">
+    ${inspectorCard(chgs)} ${vmListCard(plan)}
+  </div></div>`;
+}
+function applyBar(chgs){
+  const nb=chgs.filter(c=>c.badge==="boot").length, hot=chgs.filter(c=>c.badge==="hot").length;
+  return `<b style="font-size:13px">${chgs.length} 项变更</b>
+    ${chgs.length-nb-hot?`<span class="badge b-now">${chgs.length-nb-hot} 即时</span>`:""}
+    ${hot?`<span class="badge b-hot">${hot} 热调</span>`:""}
+    ${nb?`<span class="badge b-boot">${nb} 需重启</span>`:""}
+    <button class="btn ghost" data-act="cancel">放弃</button>
+    <button class="btn" data-act="validate">校验</button>
+    <button class="btn pri" data-act="apply" ${chgs.length?"":"disabled"}>应用</button>`;
+}
+function attrCard(){
+  const segs=[["内核",5,"var(--kern)"],["系统服务",3,"var(--p-os)"],["虚拟化系统",8,"var(--p-virt)"],
+              ["SPDK",6,"var(--p-spdk)"],["虚拟机",38,"var(--p-vm)"],["空闲",40,"var(--surface2)"]];
+  return `<div class="card"><h2>主机 CPU 归户 <span class="hint">内存同口径 · 点“虚拟化系统”可展开服务明细</span></h2>
+    <div class="attr-bar">${segs.map(([n,v,c])=>`<div class="as" style="flex:${v};background:${c}" title="${n} ${v}%"></div>`).join("")}</div>
+    <div class="attr-legend">${segs.map(([n,v,c])=>`<span class="it" ${n==="虚拟化系统"?'role="button" tabindex="0" data-act="toggle-svc" style="cursor:pointer"':""}>
+      <span class="sw" style="background:${c};${n==="空闲"?"border:1px solid var(--line2)":""}"></span>${n} <b>${v}%</b>${n==="虚拟化系统"?" ▾":""}</span>`).join("")}</div>
+    ${S.showSvc?`<div class="svc-detail">ferrovirt <b>1.2%</b> · hyper-agent <b>0.8%</b> · lictor <b>0.4%</b> ·
+      mariadb <b>3.1%</b> · nginx <b>0.6%</b> · petrel <b>1.9%</b> <span>（xvirt.slice 内 cpu.stat）</span></div>`:""}
+  </div>`;
+}
+function cpuCard(plan){
+  const ded=dedCores(plan);
+  const nodeHtml=n=>{ const m=plan.mem[n];
+    return `<div class="numa"><div class="numa-cap"><b>Socket ${n} · NUMA ${n}</b><span>8C/16T</span>
+      <span>内存 ${NODE_MEM}G</span><span>大页 2M×${m.hp2m*512} · 1G×${m.hp1g}</span>
+      <span data-poolutil="${n}">vm 池 –%</span></div>
+      <div class="cores">${nodeCores(n).map(c=>{
+        const p=plan.corePool[c], owner=ded[c], pend=S.edit&&S.applied.corePool[c]!==plan.corePool[c];
+        const cls=owner?"pd":POOLS[p].cls;
+        return `<div class="core ${S.sel.has(c)?"sel":""} ${pend?"pending":""}" data-core="${c}"
+            ${S.edit?'draggable="true"':""} title="核 ${c}（cpu ${c}/${c+16}）· ${owner?("独占："+owner):POOLS[p].n}">
+          <span class="tag">${owner?esc(owner):""}</span>
+          ${coreThreads(c).map(t=>`<div class="thr ${cls}" data-cpu="${t}">
+            <i class="u" style="height:${S.util[t]}%"></i><span class="n">${t}</span></div>`).join("")}
+        </div>`;}).join("")}</div></div>`; };
+  const counts=p=>Object.values(plan.corePool).filter(x=>x===p).length;
+  return `<div class="card"><h2>CPU 拓扑 <span class="hint">${S.edit?"拖核到池图例（或点选多核后点图例）· HT 成对移动":"填充高度 = 5s 利用率 · SPDK 为轮询占用"}</span></h2>
+    ${nodeHtml(0)}${nodeHtml(1)}
+    <div class="legend">
+      ${Object.entries(POOLS).map(([k,p])=>`<button class="pool-chip ${S.edit?"droppable":""}" data-pool="${k}">
+        <span class="sw" style="background:var(${p.v})"></span>${p.n} ×${counts(k)}C</button>`).join("")}
+      <span class="pool-chip"><span class="sw" style="background:var(--p-ded)"></span>虚拟机独占 ×${Object.keys(dedCores(plan)).length}C</span>
+    </div></div>`;
+}
+function memCard(plan){
+  const bar=n=>{ const m=plan.mem[n], bud=vmPoolBudget(n), used=vmPoolUsed(n), free=Math.max(0,bud-used);
+    const segs=[ ["kern","内核·其它",KERN_G,"" ],
+      ["os",`OS ${m.os}G`,m.os,"var(--p-os)"], ["g","os",0,""],
+      ["virt",`虚拟化 ${m.virt}G`,m.virt,"var(--p-virt)"], ["g","virt",0,""],
+      ["hp2m",`大页2M ${m.hp2m}G`,m.hp2m,"var(--hp2m)"], ["g","hp2m",0,""],
+      ["hp1g",`大页1G ${m.hp1g}G${S.edit?" ⟳":""}`,m.hp1g,"var(--hp1g)"], ["g","hp1g",0,""],
+      ["vm",`VM 已用 ${used}G`,used,"var(--p-vm)"],
+      ["free",`余量 ${Math.round(free)}G + 安全 ${SAFETY_G}G`,free+SAFETY_G,""] ];
+    return `<div style="margin-top:10px"><div class="sub"><b class="mono">NUMA ${n}</b> · ${NODE_MEM}G ·
+        VM 池预算 <b>${bud}G</b>${VMS_HP_NOTE(n)}</div>
+      <div class="membar" data-node="${n}">
+        ${segs.map(([k,label,g,color])=> k==="g"
+          ? (S.edit?`<div class="grip" data-node="${n}" data-f="${label}" title="拖拽调整"></div>`:"")
+          : `<div class="mseg ${k==="kern"?"kern":k==="free"?"free":""}" style="flex:${Math.max(g,1.5)};${color?`background:${color}`:""}"><span>${label}</span></div>`
+        ).join("")}
+      </div>
+      <div class="mem-note"><span>大页1G 在用 <b>${hp1gUsed(n)}G</b>/${m.hp1g}G（含 SPDK 圈占${n===0?" 4G":" 0G"}）</span>
+        <span>大页2M 在用 <b>${HP2M_USED[n]}G</b></span><span>memtier 借出 <b>${mtLent(n)}G</b>（不占 RAM）</span></div>
+    </div>`; };
+  return `<div class="card"><h2>内存与大页（per-NUMA）<span class="hint">${S.edit?"拖竖条手柄调整各段 · 1G 大页变更需重启 ⟳":"段宽 = 规划额度"}</span></h2>
+    ${bar(0)}${bar(1)}</div>`;
+}
+function VMS_HP_NOTE(n){ const names=Object.entries(P().place)
+  .filter(([id,pl])=>pl.backend==="hp1g"&&(pl.node===n||(pl.vnodes||[]).some(v=>v.host===n))&&VMS[id].state==="running")
+  .map(([id])=>id); return names.length?` · 大页 VM：${names.join("、")}`:""; }
+function mtLent(n){ let s=0; for(const [id,pl] of Object.entries(P().place))
+  if(pl.memtier&&pl.node===n&&VMS[id].mt) s+=VMS[id].mt.swp; return Math.round(s*10)/10; }
+function memtierCard(plan){
+  const rows=Object.entries(plan.place).filter(([,pl])=>pl.memtier);
+  const press=32;
+  return `<div class="card"><h2>内存分层（memtier）<span class="hint">数据源 x-memtier-query · 总控档位每 5s 下发</span></h2>
+    <div class="sub">主机内存压力 <b class="mono">0.${press}</b> · 当前档位 <b style="color:var(--warn)">下刷中</b></div>
+    <div class="gauge"><div class="fill" style="width:${press}%"></div>
+      <div class="gtick evict" style="left:${plan.wm.evict}%" data-wm="evict" title="下刷水位 ${plan.wm.evict}%"></div>
+      <div class="gtick back" style="left:${plan.wm.back}%" data-wm="back" title="回血水位 ${plan.wm.back}%"></div></div>
+    <div class="gtick-lab"><span>下刷水位 <b>${plan.wm.evict}%</b></span><span>回血水位 <b>${plan.wm.back}%</b></span>
+      <span>${S.edit?"（可拖动刻度）":""}</span></div>
+    ${rows.map(([id,pl])=>{ const vm=VMS[id], mt=vm.mt||{res:vm.memGB,swp:0};
+      return `<div class="mt-row"><b>${id}</b><span class="prio">${pl.prio}</span>
+        <div class="mt-bar"><div class="mt-res" style="flex:${mt.res}" title="常驻"></div>
+          <div class="mt-swp" style="flex:${mt.swp}" title="已换出"></div></div>
+        <span class="mt-num">常驻 ${mt.res}G · 换出 ${mt.swp}G</span></div>`; }).join("")}
+    <div class="mt-row"><b>后端盘</b><span class="mono sub">nvme1n1p3</span>
+      <div class="mt-bar"><div style="flex:6.8;background:var(--swap)"></div><div style="flex:17.2"></div></div>
+      <span class="mt-num">6.8G / 24G · 下刷 210 MB/s</span></div></div>`;
+}
+function spdkCard(plan){
+  const cores=Object.entries(plan.corePool).filter(([,p])=>p==="spdk").map(([c])=>c);
+  return `<div class="card"><h2>SPDK 预留 <span class="hint">本期只圈资源；vhost target 部署为后续</span></h2>
+    <div class="sub" style="display:flex;gap:18px;flex-wrap:wrap;align-items:center">
+      <span>隔离核 <b class="mono">${cores.length?cores.map(c=>c+"·"+(+c+16)).join(", "):"（空）"}</b></span>
+      <span>大页圈占 <b>1G×4（NUMA0）</b></span><span>IRQ 已驱离 <b>${cores.length?"是":"—"}</b></span>
+      <label style="display:inline-flex;gap:6px;align-items:center">
+        <input type="checkbox" data-act="spdk-boot" ${plan.spdkBoot?"checked":""} ${S.edit?"":"disabled"}
+          style="width:auto">低抖动启动档（nohz_full）<span class="badge b-boot">需重启</span></label>
+    </div></div>`;
+}
+function inspectorCard(chgs){
+  let body="";
+  if(S.edit){
+    body = chgs.length? chgs.map((c,i)=>`<div class="chg">
+        <span class="badge ${c.badge==="boot"?"b-boot":c.badge==="hot"?"b-hot":"b-now"}">${{now:"即时",hot:"热调",boot:"⟳重启"}[c.badge]}</span>
+        <span>${esc(c.label)}</span><button class="undo" data-undo="${i}" title="撤销">撤销</button></div>`).join("")
+      : `<div class="sub">尚无变更。拖拽核心/手柄，或点选核心后点击池图例。</div>`;
+    if(S.issues) body += `<div style="margin-top:10px">${ S.issues.length
+        ? S.issues.map(i=>`<div class="issue ${i.lv}">${i.lv==="block"?"✕":"⚠"} ${esc(i.msg)}</div>`).join("")
+        : `<div class="issue ok">✓ 校验通过（服务端 dry-run）</div>`}</div>`;
+  } else body = `<div class="sub">查看模式。点「编辑」后：<br>· 拖核心到池图例（HT 成对）<br>· 拖 VM 行到核心做独占绑定<br>
+    · 拖内存段手柄 / memtier 水位线<br>· 点核心多选，再点池图例批量分配</div>`;
+  return `<div class="card"><h2>${S.edit?"变更清单":"检查器"}</h2>${body}</div>`;
+}
+function vmListCard(plan){
+  return `<div class="card"><h2>虚拟机放置 <span class="hint">${S.edit?"拖行到 CPU 板 = 独占绑定":"点击进入 CPU/NUMA 绑定"}</span></h2>
+    ${Object.entries(VMS).map(([id,vm])=>{ const pl=plan.place[id];
+      return `<div class="vm-row" data-vm="${id}" ${S.edit&&vm.state==="running"?'draggable="true"':""} tabindex="0" role="button">
+        <span class="dot" style="background:${vm.state==="running"?"var(--ok)":"var(--line2)"}"></span>
+        <span class="nm">${id}</span><span class="sub mono">${vm.vcpus}v/${vm.memGB}G</span>
+        <span class="cs">
+          <span class="mini">${pl.mode==="dedicated"?"独占":"共享"}</span>
+          <span class="mini">N${pl.numa==="manual"?"UMA×"+(pl.vnodes||[]).length:pl.node}</span>
+          <span class="mini">${{anon:"匿名",memfd:"memfd",hp2m:"大页2M",hp1g:"大页1G"}[pl.backend]}</span>
+          ${pl.memtier?`<span class="mini" style="color:var(--accent);border-color:var(--accent)">分层·${pl.prio}</span>`:""}
+        </span></div>`; }).join("")}</div>`;
+}
+
+/* ── 单 VM 视图：CPU 与 NUMA 绑定 ── */
+function vmView(id){
+  const vm=VMS[id], d=S.vmDraft, a=S.applied.place[id];
+  const dirty=JSON.stringify(d)!==JSON.stringify(a);
+  const running=vm.state==="running";
+  return headerHtml(`虚拟机 <b>${id}</b> · CPU 与 NUMA 绑定`) + `
+  <div class="vhead"><button class="back" data-act="back">← 返回资源规划</button><h1>${id}</h1>
+    <span class="chip"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:${running?"var(--ok)":"var(--line2)"}"></span>${running?"运行中":"已关机"}</span>
+    <span class="chip mono">${vm.vcpus} vCPU · ${vm.memGB}G</span>
+    ${vm.petrel?`<span class="chip">petrel 盘</span>`:""}
+    <span class="sp"></span>
+    ${dirty?`<span class="sub">${running?"绑定可热调；后端/NUMA 下次启动生效":"关机状态，全部下次启动生效"}</span>
+      <button class="btn ghost" data-act="vm-cancel">放弃</button>
+      <button class="btn pri" data-act="vm-save">保存放置</button>`:""}
+  </div>
+  <div class="grid"><div class="col">
+    <div class="card"><h2>CPU 放置</h2>
+      <div class="radio-row">
+        <button class="radio-card ${d.mode==="shared"?"on":""}" data-act="vm-mode" data-v="shared">共享池调度
+          <small>vCPU 在共享池内由调度器分配，可设权重</small></button>
+        <button class="radio-card ${d.mode==="dedicated"?"on":""}" data-act="vm-mode" data-v="dedicated">独占绑定
+          <small>vCPU 1:1 绑定物理线程 ${running?'<span class="badge b-hot">热调</span>':""}</small></button>
+      </div>
+      ${d.mode==="dedicated"?pinEditor(id,d):`<div class="sub">共享模式：无绑定。cpu.weight=100（原型未开放调整）。</div>`}
+    </div>
+    <div class="card"><h2>NUMA 拓扑 ${running?'<span class="badge b-vm">需重启生效</span>':""}</h2>
+      <div class="radio-row">
+        <button class="radio-card ${d.numa==="auto"?"on":""}" data-act="vm-numa" data-v="auto">自动（单节点）
+          <small>放置器选最空节点，内存 policy=bind</small></button>
+        <button class="radio-card ${d.numa==="manual"?"on":""}" data-act="vm-numa" data-v="manual">显式 vNUMA
+          <small>跨节点 VM：guest 看到与宿主对齐的拓扑</small></button>
+      </div>
+      ${d.numa==="auto"?`<div class="sub" style="margin-top:6px">绑定节点：
+          <select data-act="vm-node">${[0,1].map(n=>`<option value="${n}" ${d.node===n?"selected":""}>NUMA ${n}（空闲 ${Math.max(0,vmPoolBudget(n)-vmPoolUsed(n))}G）</option>`).join("")}</select>
+          <span style="margin-left:10px">QEMU：<span class="mono">memory-backend-*,host-nodes=${d.node},policy=bind</span></span></div>`
+        : vnodeEditor(id,d)}
+    </div>
+  </div><div class="col">
+    <div class="card"><h2>内存后端</h2>
+      ${["anon","memfd","hp2m","hp1g"].map(b=>{ const dis=(b==="anon"&&vm.petrel);
+        return `<button class="radio-card ${d.backend===b?"on":""}" style="width:100%;margin-bottom:6px"
+          data-act="vm-backend" data-v="${b}" ${dis?"disabled":""}>${BACKENDS[b]}
+          <small>${b==="anon"?"唯一支持 memtier；不可接 vhost-user":b==="memfd"?"petrel/vhost 可用；无大页收益":"vhost-user 推荐；从大页池整额扣减"}${dis?" ·（petrel 盘 VM 不可用）":""}</small></button>`;}).join("")}
+      <label style="display:flex;gap:8px;align-items:center;font-size:13px;margin-top:4px">
+        <input type="checkbox" data-act="vm-memtier" ${d.memtier?"checked":""} ${d.backend==="anon"?"":"disabled"} style="width:auto">
+        内存分层 ${d.backend!=="anon"?'<span class="sub">（仅匿名后端）</span>':""}
+        ${d.memtier?`<select data-act="vm-prio" style="margin-left:6px">
+          ${["high","normal","low"].map(p=>`<option ${d.prio===p?"selected":""}>${p}</option>`).join("")}</select>`:""}
+      </label></div>
+    <div class="card"><h2>生效性</h2><div class="sub">
+      · 独占绑定/解绑：运行中<b>热调</b>（QMP query-cpus-fast + sched_setaffinity）<br>
+      · NUMA / 内存后端：写入 vm_config，<b>下次启动生效</b><br>
+      · memtier 开关/优先级：<b>即时</b>（总控下一拍生效）</div></div>
+  </div></div>`;
+}
+function pinEditor(id,d){
+  const pinsCnt=Object.keys(d.pins).length, vm=VMS[id];
+  return `<div class="sub" style="margin:4px 0 8px">已绑定 <b>${pinsCnt}/${vm.vcpus}</b> 个 vCPU —— 拖 vCPU 到下方线程格（仅虚拟机池内、未被他人占用的线程可落）</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+      ${Array.from({length:vm.vcpus},(_,v)=>{ const t=d.pins[v];
+        return `<span class="vcpu-chip ${t!==undefined?"pinned":""}" ${t===undefined?'draggable="true"':""} data-vcpu="${v}">v${v}${t!==undefined?` → cpu${t}`:""}</span>`;}).join("")}
+      <span class="sp"></span>
+      <button class="btn" data-act="vm-auto" data-v="0">自动绑定 N0</button>
+      <button class="btn" data-act="vm-auto" data-v="1">自动绑定 N1</button>
+      <button class="btn ghost" data-act="vm-clear">清空</button></div>
+    ${[0,1].map(n=>`<div class="numa"><div class="numa-cap"><b>NUMA ${n}</b><span>虚拟机池线程</span></div>
+      <div class="cores">${nodeCores(n).filter(c=>S.applied.corePool[c]==="vm").map(c=>`
+        <div class="core"><span class="tag"></span>${coreThreads(c).map(t=>{
+          const own=Object.entries(d.pins).find(([,x])=>x===t);
+          const oth=!own&&pinnedBy(S.applied,t)&&pinnedBy(S.applied,t).vm!==id?pinnedBy(S.applied,t):null;
+          return `<div class="thr pm ${own?"pin-own":""} ${oth?"pin-oth":""}" data-thr="${t}"
+            title="${oth?("已被 "+oth.vm+" 绑定"):("cpu "+t)}">
+            ${own?`<button class="px" data-unpin="${own[0]}" title="解绑">×</button>`:""}
+            <span class="n">${own?("v"+own[0]):oth?"占":t}</span></div>`;}).join("")}
+        </div>`).join("")}</div></div>`).join("")}`;
+}
+function vnodeEditor(id,d){
+  const vm=VMS[id]; d.vnodes=d.vnodes||[{vcpus:vm.vcpus,memGB:vm.memGB,host:0}];
+  const sv=d.vnodes.reduce((s,v)=>s+ +v.vcpus,0), sm=d.vnodes.reduce((s,v)=>s+ +v.memGB,0);
+  return `<div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+    ${d.vnodes.map((v,i)=>`<div class="vnode-card" style="border-left-color:${v.host===0?"var(--p-virt)":"var(--hp1g)"}">
+      <b class="mono">vNUMA ${i}</b>
+      <label>vCPU <input class="num-in" type="number" min="1" max="${vm.vcpus}" value="${v.vcpus}" data-vn="${i}" data-f="vcpus"></label>
+      <label>内存 G <input class="num-in" type="number" min="1" max="${vm.memGB}" value="${v.memGB}" data-vn="${i}" data-f="memGB"></label>
+      <label>→ 宿主 <select data-vn="${i}" data-f="host">${[0,1].map(n=>`<option value="${n}" ${v.host===n?"selected":""}>NUMA ${n}</option>`).join("")}</select></label>
+      ${d.backend==="hp1g"?`<span class="sub">大页余量 ${Math.max(0,S.applied.mem[v.host].hp1g-hp1gUsed(v.host))}G</span>`:""}
+      ${d.vnodes.length>1?`<button class="btn ghost" data-act="vn-del" data-v="${i}">删除</button>`:""}</div>`).join("")}
+    <div style="display:flex;gap:10px;align-items:center">
+      <button class="btn" data-act="vn-add" ${d.vnodes.length>=2?"disabled":""}>+ 增加 vNUMA 节点</button>
+      <span class="sub">Σ vCPU <b style="color:${sv===vm.vcpus?"var(--ok)":"var(--bad)"}">${sv}/${vm.vcpus}</b> ·
+        Σ 内存 <b style="color:${sm===vm.memGB?"var(--ok)":"var(--bad)"}">${sm}/${vm.memGB}G</b></span></div>
+    <div class="sub mono">-numa node,nodeid=i,cpus=…,memdev=mi（memdev 按 host-nodes=… policy=bind）</div></div>`;
+}
+
+/* ───────────────────────── 事件 ───────────────────────── */
+function toast(msg,kind){ const t=document.createElement("div"); t.className="toast "+(kind||"");
+  t.textContent=msg; $("#toasts").appendChild(t); setTimeout(()=>t.remove(),3200); }
+
+document.addEventListener("click",e=>{
+  const undo=e.target.closest("[data-undo]");
+  if(undo){ revertChange(computeChanges()[+undo.dataset.undo]); return; }
+  const unpin=e.target.closest("[data-unpin]");
+  if(unpin){ delete S.vmDraft.pins[unpin.dataset.unpin]; render(); return; }
+  const el=e.target.closest("[data-act],[data-pool],.vm-row,.core");
+  if(!el) return;
+  const act=el.dataset.act;
+  if(act==="edit"){ S.edit=true; S.draft=clone(S.applied); S.issues=null; S.sel.clear(); render(); return; }
+  if(act==="cancel"){ S.edit=false; S.draft=null; S.issues=null; S.sel.clear(); render(); return; }
+  if(act==="validate"){ S.issues=validate(S.draft); render(); return; }
+  if(act==="apply"){ const iss=validate(S.draft);
+    if(iss.some(i=>i.lv==="block")){ S.issues=iss; render(); toast("存在阻塞项，无法应用","err"); return; }
+    const chgs=computeChanges(); const boot=chgs.filter(c=>c.badge==="boot").map(c=>c.label);
+    toast("任务 applyResourcePlan 已提交…");
+    setTimeout(()=>{ S.applied=clone(S.draft); S.edit=false; S.draft=null; S.issues=null; S.sel.clear();
+      S.pendBoot=boot; render(); toast(`应用成功 · ${chgs.length-boot.length} 项已生效${boot.length?` · ${boot.length} 项待重启`:""}`,"ok"); },900);
+    return; }
+  if(act==="dismiss-banner"){ S.pendBoot=[]; render(); return; }
+  if(act==="toggle-svc"){ S.showSvc=!S.showSvc; render(); return; }
+  if(act==="spdk-boot"){ if(S.edit){ S.draft.spdkBoot=el.checked; render(); } return; }
+  if(act==="back"){ S.route="host"; S.vmDraft=null; render(); return; }
+  if(act==="vm-mode"){ S.vmDraft.mode=el.dataset.v; if(el.dataset.v==="shared") S.vmDraft.pins={}; render(); return; }
+  if(act==="vm-numa"){ S.vmDraft.numa=el.dataset.v; render(); return; }
+  if(act==="vm-backend"){ const b=el.dataset.v; S.vmDraft.backend=b; if(b!=="anon") S.vmDraft.memtier=false; render(); return; }
+  if(act==="vm-auto"){ autoPin(+el.dataset.v); return; }
+  if(act==="vm-clear"){ S.vmDraft.pins={}; render(); return; }
+  if(act==="vn-add"){ S.vmDraft.vnodes.push({vcpus:1,memGB:1,host:1}); render(); return; }
+  if(act==="vn-del"){ S.vmDraft.vnodes.splice(+el.dataset.v,1); render(); return; }
+  if(act==="vm-cancel"){ S.vmDraft=clone(S.applied.place[S.route]); render(); return; }
+  if(act==="vm-save"){ saveVm(); return; }
+  /* 池图例点击 = 分配所选 */
+  if(el.dataset.pool && S.edit && S.sel.size){
+    S.sel.forEach(c=>{ S.draft.corePool[c]=el.dataset.pool; }); S.sel.clear(); S.issues=null; render(); return; }
+  /* 核心点选（编辑态多选） */
+  const core=e.target.closest(".core[data-core]");
+  if(core && S.edit && S.route==="host"){ const c=+core.dataset.core;
+    S.sel.has(c)?S.sel.delete(c):S.sel.add(c); render(); return; }
+  const row=e.target.closest(".vm-row[data-vm]");
+  if(row){ S.route=row.dataset.vm; S.vmDraft=clone(S.applied.place[row.dataset.vm]); render(); return; }
+});
+document.addEventListener("change",e=>{
+  const el=e.target;
+  if(el.dataset.act==="vm-node"){ S.vmDraft.node=+el.value; render(); return; }
+  if(el.dataset.act==="vm-memtier"){ S.vmDraft.memtier=el.checked; render(); return; }
+  if(el.dataset.act==="vm-prio"){ S.vmDraft.prio=el.value; return; }
+  if(el.dataset.act==="spdk-boot"){ if(S.edit){ S.draft.spdkBoot=el.checked; render(); } return; }
+  if(el.dataset.vn!==undefined){ const v=S.vmDraft.vnodes[+el.dataset.vn];
+    v[el.dataset.f]=el.dataset.f==="host"?+el.value:Math.max(1,+el.value||1); render(); return; }
+});
+document.addEventListener("keydown",e=>{
+  if(e.key==="Enter"&&e.target.dataset&&e.target.dataset.act==="toggle-svc"){ S.showSvc=!S.showSvc; render(); }
+});
+
+function autoPin(node){
+  const vm=VMS[S.route], d=S.vmDraft; d.pins={};
+  const free=nodeCores(node).filter(c=>S.applied.corePool[c]==="vm").flatMap(coreThreads)
+    .filter(t=>{ const p=pinnedBy(S.applied,t); return !p||p.vm===S.route; });
+  if(free.length<vm.vcpus){ toast(`NUMA${node} 虚拟机池空闲线程不足（${free.length}/${vm.vcpus}）`,"err"); return; }
+  for(let v=0;v<vm.vcpus;v++) d.pins[v]=free[v];
+  render();
+}
+function saveVm(){
+  const id=S.route, vm=VMS[id], d=S.vmDraft;
+  if(d.mode==="dedicated"&&Object.keys(d.pins).length!==vm.vcpus){ toast(`独占模式需绑满 ${vm.vcpus} 个 vCPU`,"err"); return; }
+  if(d.numa==="manual"){ const sv=d.vnodes.reduce((s,v)=>s+ +v.vcpus,0), sm=d.vnodes.reduce((s,v)=>s+ +v.memGB,0);
+    if(sv!==vm.vcpus||sm!==vm.memGB){ toast("vNUMA 的 vCPU/内存合计必须等于 VM 规格","err"); return; } }
+  toast(vm.state==="running"?"PATCH vm placement 已提交（绑定热调）…":"已保存，下次启动生效…");
+  setTimeout(()=>{ S.applied.place[id]=clone(d); if(S.draft) S.draft.place[id]=clone(d);
+    render(); toast("放置已保存","ok"); },700);
+}
+
+/* ── 拖拽 ── */
+let drag=null;
+document.addEventListener("dragstart",e=>{
+  const core=e.target.closest(".core[data-core]");
+  const row=e.target.closest(".vm-row[data-vm]");
+  const chip=e.target.closest(".vcpu-chip[data-vcpu]");
+  if(core&&S.edit&&S.route==="host"){ drag={t:"core",c:+core.dataset.core}; e.dataTransfer.effectAllowed="move"; }
+  else if(row&&S.edit&&S.route==="host"){ drag={t:"vm",id:row.dataset.vm}; e.dataTransfer.effectAllowed="move"; }
+  else if(chip&&S.route!=="host"){ drag={t:"vcpu",v:+chip.dataset.vcpu}; e.dataTransfer.effectAllowed="move"; }
+  else { e.preventDefault(); return; }
+  e.dataTransfer.setData("text/plain","");
+});
+document.addEventListener("dragend",()=>{ drag=null;
+  document.querySelectorAll(".drop-ok,.drop-no").forEach(el=>el.classList.remove("drop-ok","drop-no")); });
+document.addEventListener("dragover",e=>{
+  if(!drag) return;
+  const poolChip=e.target.closest(".pool-chip[data-pool]");
+  const core=e.target.closest(".core[data-core]");
+  const thr=e.target.closest(".thr[data-thr]");
+  if(drag.t==="core"&&poolChip){ e.preventDefault(); poolChip.classList.add("drop-ok"); }
+  else if(drag.t==="vm"&&core){ e.preventDefault();
+    core.classList.add(P().corePool[core.dataset.core]==="vm"?"drop-ok":"drop-no"); }
+  else if(drag.t==="vcpu"&&thr){ const t=+thr.dataset.thr, oth=pinnedBy(S.applied,t);
+    const bad=(oth&&oth.vm!==S.route)||Object.values(S.vmDraft.pins).includes(t);
+    e.preventDefault(); thr.classList.add(bad?"drop-no":"drop-ok"); }
+});
+document.addEventListener("dragleave",e=>{
+  const el=e.target.closest(".pool-chip,.core,.thr"); if(el) el.classList.remove("drop-ok","drop-no");
+});
+document.addEventListener("drop",e=>{
+  if(!drag) return; e.preventDefault();
+  const poolChip=e.target.closest(".pool-chip[data-pool]");
+  const core=e.target.closest(".core[data-core]");
+  const thr=e.target.closest(".thr[data-thr]");
+  if(drag.t==="core"&&poolChip){
+    const set=S.sel.has(drag.c)?[...S.sel]:[drag.c];
+    set.forEach(c=>{ S.draft.corePool[c]=poolChip.dataset.pool; });
+    S.sel.clear(); S.issues=null; render();
+  } else if(drag.t==="vm"&&core){
+    dedicateVm(drag.id,+core.dataset.core);
+  } else if(drag.t==="vcpu"&&thr){
+    const t=+thr.dataset.thr, oth=pinnedBy(S.applied,t);
+    if((oth&&oth.vm!==S.route)||Object.values(S.vmDraft.pins).includes(t)){ toast("该线程已被占用","err"); }
+    else { S.vmDraft.pins[drag.v]=t; render(); }
+  }
+  drag=null;
+});
+function dedicateVm(id,startCore){
+  const vm=VMS[id], need=Math.ceil(vm.vcpus/2), node=coreNode(startCore);
+  const ded=dedCores(S.draft);
+  const cand=nodeCores(node).filter(c=>c>=startCore&&S.draft.corePool[c]==="vm"&&(!ded[c]||ded[c]===id)).slice(0,need);
+  if(cand.length<need){ toast(`从核 ${startCore} 起，NUMA${node} 池内空闲核不足（需 ${need} 个）`,"err"); return; }
+  const pl=S.draft.place[id]; pl.mode="dedicated"; pl.pins={}; pl.node=node; pl.numa="auto";
+  let v=0; for(const c of cand) for(const t of coreThreads(c)){ if(v<vm.vcpus) pl.pins[v++]=t; }
+  S.issues=null; render();
+  toast(`${id} → 独占核 ${cand.join(",")}（NUMA${node}）`);
+}
+
+/* ── 内存段手柄 / 水位线（pointer） ── */
+let grip=null;
+document.addEventListener("pointerdown",e=>{
+  const g=e.target.closest(".grip"); const t=e.target.closest(".gtick");
+  if(g&&S.edit){ const bar=g.closest(".membar");
+    grip={t:"mem",node:+g.dataset.node,f:g.dataset.f,x:e.clientX,gPerPx:NODE_MEM/bar.getBoundingClientRect().width,
+          v0:S.draft.mem[+g.dataset.node][g.dataset.f]};
+    g.classList.add("on"); g.setPointerCapture(e.pointerId); }
+  else if(t&&S.edit){ const bar=t.closest(".gauge").getBoundingClientRect();
+    grip={t:"wm",f:t.dataset.wm,bar}; t.setPointerCapture(e.pointerId); }
+});
+document.addEventListener("pointermove",e=>{
+  if(!grip) return;
+  if(grip.t==="mem"){
+    const nv=Math.round(grip.v0+(e.clientX-grip.x)*grip.gPerPx);
+    const lim={os:[2,16],virt:[2,24],hp2m:[0,32],hp1g:[0,48]}[grip.f];
+    S.draft.mem[grip.node][grip.f]=Math.min(lim[1],Math.max(lim[0],nv));
+    render();
+  } else {
+    let pct=Math.round((e.clientX-grip.bar.left)/grip.bar.width*100);
+    if(grip.f==="evict") pct=Math.min(S.draft.wm.back-5,Math.max(2,pct));
+    else pct=Math.min(90,Math.max(S.draft.wm.evict+5,pct));
+    S.draft.wm[grip.f]=pct; render();
+  }
+});
+document.addEventListener("pointerup",()=>{ grip=null; });
+
+render();
+</script>
+
+<button class="theme-fab" id="themeFab" title="切换亮/暗主题" aria-label="切换亮/暗主题">🌓</button>
+<script>
+  // 独立 demo：亮/暗主题切换（线上原型由宿主控制主题，这里自带按钮）
+  (function(){
+    var root = document.documentElement, KEY = 'xvirt-rp-demo.theme';
+    try { var saved = localStorage.getItem(KEY); if (saved) root.setAttribute('data-theme', saved); } catch(e){}
+    document.getElementById('themeFab').addEventListener('click', function(){
+      var cur = root.getAttribute('data-theme');
+      var sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      var isDark = cur ? cur === 'dark' : sysDark;
+      var next = isDark ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem(KEY, next); } catch(e){}
+    });
+  })();
+</script>
+</body>
+</html>
