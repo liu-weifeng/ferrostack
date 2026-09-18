@@ -55,7 +55,7 @@ SPDK、memtier 统一收进一份 per-host「资源规划（resource plan）」�
 | SPDK 池增减 | **人** | cpuset，受 ① 的 `cap` 上限约束 | ✓ | 即时（超 `cap` 需重启） |
 | VM 调度范围（换节点 / 收编 C→B） | **放置控制器** | scope 的 `AllowedCPUs` = `cpuset.cpus` | ✓ | 即时 |
 | vCPU 1:1 绑核 / 解绑 | **放置控制器** | **`sched_setaffinity(2)`** | ✗ | 即时 |
-| CPU 份额 | — | `cpu.weight`（A 级 10000 / B·C 级 100） | ✓ | — **无人在线调，见附录缺口** |
+| CPU 份额 | **放置控制器** | `cpu.weight` 按优先级映射（A 级 10000；B/C 级 high 400 / normal 100 / low 25）+ `machine-shared.slice` 权重取子项之和 | ✓ | 即时 |
 | **内存** | | | | |
 | OS / 虚拟化服务预留 | **人** | `memory.min`@system/virt.slice | ✓ | 即时 |
 | VM 池预算与硬顶 | **人** | `memory.high` + `memory.max`@machine.slice | ✓ | 即时 |
@@ -542,6 +542,25 @@ Cost(P) = Σ_vm [ w_remote · remote_mem_ratio(vm)          // 跨节点访存�
 
 档位只决定「目标形态」，具体哪台 VM 落哪个节点、谁保留独占，仍由目标函数决定。
 
+**CPU 份额（`cpu.weight`）**：紧张档把所有自动 VM 压成同一形态之后，**区分优劣的手段
+只剩份额**。所以权重必须随优先级走，不能是常量：
+
+| 等级 | 权重 | 说明 |
+|---|---|---|
+| A · 独占 | 10000 | 核是独占的，权重只影响与模拟器 / iothread 线程的相对份额，保持高位即可 |
+| B / C | `auto_placement.cpu_weight` 查表，默认 high 400 / normal 100 / low 25 | 表可调；校验器强制 `high ≥ normal ≥ low`，次序颠倒直接拒绝；值夹到内核区间 1..10000 |
+
+改权重是**免费动作**（纯写 `cpu.weight`，不迁线程也不迁页），差分时单列为 `kind=weight`，
+本拍直接执行、不占换节点的配额。
+
+> **层级会把权重压扁，必须拉平**。cgroup v2 的 weight 只在**同级之间**成比例。C 级
+> （浮动）scope 挂 `machine-shared.slice`，而 A/B 级 scope 是 `machine.slice` 的直接
+> 子节点——于是 `machine.slice` 的子节点是 `{machine-shared.slice, vm-B1.scope, …}`。
+> `machine-shared.slice` 若保持默认的 100，**10 台 C 级 VM 加起来也只和 1 台 B 级 VM
+> 平分**，优先级表跨层被整体压扁。控制器每拍把 `machine-shared.slice` 的权重设为其子项
+> 权重之和（含固定 VM 的当前权重），层级即拉平，权重表才真的是它字面的意思。这个同步
+> 必须在「本拍无动作」的早返回**之前**做——VM 起停会改变子项之和。
+
 #### 3.10.3 求解与执行（每拍）
 
 触发：VM 启停 / 迁入迁出 / plan 应用完成 / 每 30s 一拍（`XVIRT_PLACEMENT_INTERVAL`）。
@@ -595,7 +614,7 @@ VM 转 C 允许跨节点；一台 12G 的 B 级 VM 因 N0 内存吃紧被搬到 
 |---|---|---|---|
 | vCPU 可用范围 / 整 VM 换节点 | systemd `SetUnitProperties(scope, runtime=true, AllowedCPUs=…)` = 写 `cpuset.cpus` | **即时**（内核在下一个调度点迁移线程，µs–ms 级） | 一次覆盖 vCPU + 模拟器 + iothread 全部线程 |
 | vCPU 1:1 绑核 / 解绑 | lictor：QMP `query-cpus-fast` 取每 vCPU `thread-id` → `sched_setaffinity(tid, {cpu})`；解绑 = affinity 设回 scope 全集 | **即时** | 「顺序不敏感」只对 cpuset 的收缩/扩张成立（6.7 保存用户 affinity `user_cpus_ptr`，v6.2+：cpuset 变更后取交集，交集为空回退 cpuset 全集）；**`sched_setaffinity` 本身在 mask 与当前 cpuset 交集为空时仍返回 EINVAL**。所以硬性顺序：**扩池 / 换节点先改 cpuset 再 pin，缩池先解 pin（affinity 设回全集）再缩 cpuset** |
-| CPU 份额 | `CPUWeight=` = `cpu.weight` | 即时 | A 级 10000，B/C 级 100（可按优先级映射） |
+| CPU 份额 | `CPUWeight=` = `cpu.weight`（经 `vm_apply_placement` 的 `cpu_weight`） | 即时 | A 级 10000；B/C 级按优先级查表（§3.10.2）。另需同步 `machine-shared.slice` 的权重为子项之和 |
 | **整 VM 内存换节点** | systemd `AllowedMemoryNodes=` = 写 `cpuset.mems`。cgroup v2 语义：变更 `cpuset.mems` 时内核对 cpuset 内每个进程的 mm 调 `cpuset_migrate_mm()` → `do_migrate_pages(…, MPOL_MF_MOVE_ALL)`，在内核 workqueue 里**异步迁页**；新分配立刻落到新节点 | 异步，吞吐按主机实测（经验 1–3 GB/s/节点，首次上线用 `migrate_bw_mbps` 标定） | 匿名页 / memfd(shmem) / 2M hugetlb 都可迁；与 libvirt `numatune --live`（strict 模式）同一机制。进度用 `/proc/<qemu pid>/numa_maps` 聚合（或 `numastat -p`）轮询 |
 | 按 memdev 换节点（vNUMA VM） | 我方 QEMU（memory-tiering 分支）加 QMP `x-memdev-rebind {id, host-nodes}`：对该 backend 的映射 `mbind(MPOL_BIND, MPOL_MF_MOVE|MPOL_MF_MOVE_ALL)` | 同步（可分片） | v1 不做，vNUMA VM 固定 manual；做了之后 vnode→host 映射可整体平移 |
 | 外部兜底 | hyper-agent 直接 `migrate_pages(2)`（pid, from, to）/ `move_pages(2)`（pid, 页地址表），需 `CAP_SYS_NICE` | 同步 | cpuset 路径失效时的备用；`move_pages` 可做 VMA 粒度（配 `/proc/pid/maps`） |
@@ -683,7 +702,8 @@ VM 转 C 允许跨节点；一台 12G 的 B 级 VM 因 N0 内存吃紧被搬到 
       "dedicate_max_oc": 1.0, "release_oc": 1.5, "bind_max_oc": 2.0,
       "min_shared_threads": 4, "numa_imbalance_pct": 25, "psi_cpu_high": 20,
       "promote_stable_s": 300, "cooldown_s": 600, "settle_after_boot_s": 120,
-      "max_move_gb": 64, "migrate_bw_mbps": 1500 } }
+      "max_move_gb": 64, "migrate_bw_mbps": 1500,
+      "cpu_weight": { "high": 400, "normal": 100, "low": 25 } } }   // B/C 级份额映射，§3.10.2
 ```
 
 ### 4.2 REST（ferrovirt，均挂 JWT）
@@ -731,6 +751,8 @@ VM 转 C 允许跨节点；一台 12G 的 B 级 VM 因 N0 内存吃紧被搬到 
   可用线程 < 任一浮动 VM 的 vCPU 数 → 拒绝；Σ浮动 vCPU / 可用线程 > 4 → 警告；
   某节点共享池核为 0 → 警告（该节点上的浮动内存将跨节点访问）；
   绑定单节点的共享 VM 所在节点共享池核为 0 → 拒绝。
+- CPU 份额：`auto_placement.cpu_weight` 必须 `high ≥ normal ≥ low`（否则高优先级反而
+  分得更少），值夹到内核区间 1..10000。
 - 自动放置（§3.10）：控制器只动 `placement_source=auto` 的 VM；vfio / 1G 大页 /
   vNUMA VM 强制 manual；`dedicate_max_oc < release_oc`（独占超分必须低于释放超分）
   且 `promote_stable_s > 0` 为硬校验；换节点前目标节点空闲内存 ≥ resident×1.1。
@@ -1043,12 +1065,13 @@ xvirt-autotest 加 stage（plan validate/apply 幂等性、缩池阻塞、互斥
 | §6.2 页面 | **已实现**（2026-09-14）：NodeHealthBoard 节点监控条、虚拟机 NUMA 分布视图（按远端访存降序）、实测/估计区分 |
 | P3 SPDK | **基础已实现**：spdk.slice isolated 分区、IRQ / workqueue 驱离、irqbalance drop-in、大页圈占、候选核上限 `cap` |
 | **P3.5 低抖动启动档** | **已实现**（2026-09-18，分支 `feat/boot-profile`）：`bootprofile.py` 写 grub.d drop-in + `update-grub`，按 `/proc/cmdline` 幂等对账；`plan.boot_candidate_cpus` / `shared_cpus`；三条 block + 四条 warn 校验；候选核排除出 `machine-shared.slice` 与 B/C 级 AllowedCPUs；`tests/test_bootprofile.py` 31 例 |
+| **动态 cpu.weight** | **已实现**（2026-09-18，分支 `feat/boot-profile`）：`auto_placement.cpu_weight` 优先级映射 + 免费 `weight` 动作 + `machine-shared.slice` 权重取子项之和拉平层级；次序校验 |
 | P4 memtier 融合 | **已实现**：水位线 / PSI 满刻度 / VM 池预算从 plan 读取，VM 池挤占度并入压力合成 |
 
 **单测覆盖**：`hyper-agent/tests/test_resource_plan.py` 12 例（plan 纯函数）、
 `tests/test_bootprofile.py` 31 例（候选核推导与稳定性、drop-in 只碰 `GRUB_CMDLINE_LINUX`、
 cmdline 对账四态、update-grub 回退与失败、摘除与残留、护栏）、
-`tests/test_placement.py` 33 例（归节点、远端比例四情形、健康分取最大值/分级/归一化/
+`tests/test_placement.py` 50 例（归节点、远端比例四情形、健康分取最大值/分级/归一化/
 空值不污染、实测优先与估计回落、runq 归一、RDT 比例与带宽换算、无硬件安全降级）。
 
 **与设计的已知差异（后续补）**：
@@ -1062,9 +1085,9 @@ cmdline 对账四态、update-grub 回退与失败、摘除与残留、护栏）
 - **`solve()` 的 `min_shared_threads` 仍按整个 vm 池计数**，未扣除启动档候选核；开了
   启动档后这个门槛会略松（候选核被算成可留给共享的核）。`node_stats` 的 oc 分母已扣除，
   影响面仅限 A 级装箱时的保留判断。
-- `cpu.weight` 仍是 A 级 10000 / B·C 级 100 两个常量，未按优先级与实测排队延迟动态
-  调整——**紧张档下 `priority` 对 CPU 份额不起作用**（§1 非目标里的「CPU 时间片精细
-  QoS」尚未开工）。
+- **`cpu.weight` 只按优先级静态映射，未接实测反馈**：排队延迟（`xvirt_cpu_runq_seconds`）
+  与 LLC / 内存带宽（RDT）都已在采集，但还没有进权重计算——控制器目前是「按声明的优先级
+  分配份额」，不是「按实测的受损程度补偿」。`cpu.max` 配额仍未做（§1 非目标）。
 - per-VM `memory.min` 只在用户手填 `mem_reserved_mb` 时写入；§3.7 的「热集保护
   memory.min 自动同步」未实现——VM 池顶到 `memory.high` 触发回收时，谁被回收不受
   优先级控制。
