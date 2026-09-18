@@ -16,16 +16,36 @@
 
 ## §0 摘要 · 选型决策
 
-一句话：**以 cgroup v2 cpuset 分区为唯一基础机制做运行时可调的 CPU/内存池化，
-每台 VM 落入独立 systemd scope；隔离、预留、大页、NUMA、SPDK、memtier 统一收进
-一份 per-host「资源规划（resource plan）」，由 hyper-agent 幂等对账落地；自动放置
-控制器按负载档位在线调整未锁定 VM 的绑定；前端在主机详情新增「资源规划」tab 做
-图形化展示与拖拽编辑。**
+一句话：**三层机制分工——启动参数做物理隔离底座，cgroup v2 做运行时可调的资源边界，
+放置控制器在池内做自动调度；每台 VM 落入独立 systemd scope；隔离、预留、大页、NUMA、
+SPDK、memtier 统一收进一份 per-host「资源规划（resource plan）」，由 hyper-agent
+幂等对账落地；前端在主机详情新增「资源规划」tab 做图形化展示与拖拽编辑。**
+
+### 0.1 三层机制
+
+这套方案不是单靠 cgroup v2 实现的。三层各有不可替代的职责，**层与层之间不能互相顶替**：
+
+| 层 | 职责 | 机制 | 可调性 |
+|---|---|---|---|
+| **① 启动参数**<br>（物理隔离底座） | 把 cgroup 够不着的内核行为从目标核上摘干净：managed IRQ、时钟 tick、RCU 回调；1G 大页在内存干净时预留；关掉与控制器抢活的内核自动 NUMA 平衡 | `isolcpus=managed_irq`、`nohz_full`、`rcu_nocbs`、`hugepagesz=1G hugepages=N`（grub drop-in）；`kernel.numa_balancing=0`（sysctl） | **改一次重启一次**。只适合本就固定的资源（SPDK 核、1G 大页） |
+| **② cgroup v2**<br>（可调资源边界） | 池归属、内存预留与预算、hugetlb 圈占、per-VM 计量与限额、调度域隔离 | `cpuset.cpus`/`.mems`（经 `systemctl set-property` 的 AllowedCPUs/AllowedMemoryNodes）、`memory.min\|high\|max`、`cpuset.cpus.partition=isolated`、`hugetlb.*.max`、`cpu.weight`、`memory.oom.group` | **秒级在线**，支撑拖拽即生效 |
+| **③ 放置控制器**<br>（池内自动调度） | 在 ② 划定的边界内，按主机负载给未锁定 VM 求最优等级与落点，并在线施加 | 自研（§3.10）：负载档位 + 装箱求解 + 差分执行；执行原语用 ② 的 cpuset 与 `sched_setaffinity(2)`、`migrate_pages(2)` | **每 30s 一拍**，带滞回与冷却 |
+
+> **③ 的执行原语有一半不在 cgroup 里**：vCPU 的 1:1 精确绑定靠 `sched_setaffinity(2)`
+> （cgroup 只能圈范围、不能定点），迁页兜底靠 `migrate_pages(2)`/`move_pages(2)`，
+> 大页投放靠 sysfs `nr_hugepages`，IRQ 驱离靠 `/proc/irq/*/smp_affinity_list` 与
+> `/sys/devices/virtual/workqueue/cpumask`。「cgroup 管边界、亲和性管落点、sysfs 管
+> 物理供给」是贯穿全文的分工，§3.10.4 的在线调整原语表是它的完整清单。
+
+**哪层做哪件事，取决于该资源变不变**：SPDK 的核数由 vhost 目标带宽决定、部署时定死，
+且 reactor core mask 运行中本就不能改（§3.8），所以它该压在 ① —— cgroup 在这里能提供的
+「在线增减」是账面上的。VM 的放置每天都在变，必须在 ②③。**把 SPDK 压到 ① 不是退让，
+是拿回 cgroup 给不了的东西**（managed IRQ、免 tick）。
 
 | 问题 | 决策 | 理由 |
 |---|---|---|
 | CPU 隔离用什么 | **cgroup v2 cpuset 分区**（`cpuset.cpus.partition`），不以 `isolcpus` 为基础机制 | isolcpus 需重启、静态、全有全无；内核 6.7 的 `isolated` 分区在运行时提供等效隔离（脱离调度域、无负载均衡），正好支撑「拖拽即生效」 |
-| SPDK 轮询核 | cpuset `isolated` 分区 + 可迁移 IRQ 驱离 + unbound workqueue cpumask 排除；managed IRQ（NVMe/mlx5）只能靠 `isolcpus=managed_irq`，与 `nohz_full` 一起归入「低抖动启动档」（标「需重启」） | 轮询线程要独占核、免时钟/中断干扰；isolated 分区覆盖 90% 需求，极致低抖动才需要 boot profile |
+| SPDK 轮询核 | **归层 ①**：低抖动启动档（`isolcpus=managed_irq` + `nohz_full` + `rcu_nocbs`）划定候选核；层 ② 的 cpuset `isolated` 分区 + 可迁移 IRQ 驱离 + unbound workqueue cpumask 排除在候选核内决定实际给几个 | SPDK 核数由 vhost 目标带宽决定、部署时定死，且 reactor core mask 运行中本就不能改——cgroup 的「在线增减」在这里是账面上的；而 managed IRQ（NVMe/mlx5）写 `smp_affinity_list` 返回 EIO，只有启动参数能摘。核上只有 vfio 接管的设备时，isolated 分区可单独够用 |
 | per-VM 资源边界 | **systemd transient scope**：`vm-<uuid>.scope` 挂 `machine.slice`，QEMU 经 `systemd-run --scope` **在 exec 之前**就落入 scope | 目前全部 QEMU 挤在 `xvirt-lictor.service` 的 cgroup 里（KillMode=process 的副作用），无法逐 VM 计量/限额；先起进程再搬会让 prealloc 的内存与大页永久计费到旧 cgroup（§3.3）；scope 顺带让 QEMU 生命周期独立于 lictor 重启 |
 | vCPU 绑定 | scope 级 `cpuset` 定池 + QMP `query-cpus-fast` 拿线程 id 后 `sched_setaffinity` 做 1:1 独占绑定 | 池归属用 cgroup（可整体挪），精确 pin 用线程亲和性；两层正交 |
 | 内存预留 | `memory.min` 保护 OS / 虚拟化服务 /（P4）VM 热集；`machine.slice` 用 `memory.high` 做 VM 池软预算，再以 `memory.max` 兜底 + 每 scope `memory.oom.group=1` | min 只保护已驻留页、不预扣内存；VM 匿名页在无 swap 主机上不可回收，`high` 只能节流不能阻止超限，没有 `max` 时预留会被吃穿、最后是全局 OOM 随机杀。`max` 取「MemTotal − 各项预留 − 大页 − 余量」，只在主机本来就要 OOM 的点上把代价收敛成「杀一台 VM」 |
@@ -121,18 +141,33 @@ VM 级显式属性 `mem_backend`，建 VM 时选定、互斥项在 UI 直接置�
 
 ## §3 后台实现
 
-### 3.1 选型：cgroup v2 分区，而不是 isolcpus
+### 3.1 选型：池化基础用 cgroup v2，物理隔离底座用启动参数
 
-| | isolcpus / nohz_full（启动参数） | cgroup v2 cpuset 分区（本方案） |
+| | isolcpus / nohz_full（启动参数，层 ①） | cgroup v2 cpuset 分区（层 ②） |
 |---|---|---|
 | 调整 | 改 grub + 重启 | 运行时写 cgroupfs，秒级生效 → 支撑拖拽 |
-| 隔离强度 | 彻底（连 unbound kthread 都躲开，nohz_full 免 tick） | `isolated` 分区 = 脱离调度域、无负载均衡（6.1+；6.7 完整）；per-cpu kthread 仍在，tick 仍在 |
+| 隔离强度 | 彻底（managed IRQ 可摘、nohz_full 免 tick、rcu_nocbs 免回调） | `isolated` 分区 = 脱离调度域、无负载均衡（6.1+；6.7 完整）；**per-cpu kthread 仍在，tick 仍在，managed IRQ 摘不掉** |
 | 粒度 | 整机一份静态清单 | 逐 slice/scope，层级化，可与 weight/quota 组合 |
 | 与 systemd | 无关 | `AllowedCPUs=`/`AllowedMemoryNodes=` 原生映射 cpuset |
 
-**结论**：基础机制只用 cgroup v2。SPDK 池用 `isolated` 分区；对极致低抖动需求提供
-可选「低抖动启动档」（`nohz_full=<spdk cpus> rcu_nocbs=… irqaffinity=…`，由
-xvirt-init 写 grub drop-in，UI 标「需重启」）。
+**结论：按「资源变不变」分层，不是二选一。**
+
+- **池化的基础机制只用 cgroup v2**：池归属、预留、预算、per-VM 边界全部在层 ②，
+  因为这些每天都在变，拿 isolcpus 做会退化成「改一次重启一次」。
+- **物理隔离底座用启动参数**：`nohz_full` / `rcu_nocbs` / `isolcpus=managed_irq` 这三项
+  **没有任何 cgroup 等价物**，需要它们的场景（SPDK 核服务 NVMe/mlx5）就必须走层 ①
+  的「低抖动启动档」（grub drop-in，UI 标「需重启」）。
+- **两层叠加而非替代**：开了启动档之后，实际给 SPDK 几个核仍由 cgroup 在候选核上限
+  （`pools.spdk.cap`）内决定。`isolcpus` 摘的是**调度域**，不是让核不可用——显式
+  affinity 或 cpuset 放上去的任务照跑，所以候选核在闲置时仍可承载 **1:1 绑核的独占
+  vCPU**（本就不需要负载均衡），只是**不能当共享池用**（无负载均衡会让共享 VM 堆在
+  一个核上）。校验器据此限制候选核不得并入 vm-shared。
+
+> **关于「isolcpus 已废弃」**：内核文档标为 Deprecated 的是 `isolcpus=` 的
+> **domain 形态**（建议改用 cpuset），这一层确实该让位给 isolated 分区。但
+> `isolcpus=managed_irq` 是独立的子选项，`nohz_full` / `rcu_nocbs` 更不是 isolcpus——
+> 三者都没有被废弃，也都没有 cpuset 替代品。不要用「isolcpus 废弃了」当作不用
+> 启动参数的理由，这是两件事。
 
 ### 3.2 cgroup / systemd 层级
 
@@ -321,12 +356,19 @@ memory.max@machine.slice = MemTotal − OS 预留 − 虚拟化服务预留 − 
   抢核、IRQ 打断、HT 兄弟核干扰。isolated 分区（脱离调度域、独占）+ 整核成对划入 +
   IRQ 驱离已覆盖这三件。残余只有周期 tick 与 per-CPU 内核线程：每核每秒数百次、每次
   约 1–2 µs，占用 < 0.2%、抖动微秒级，对几十微秒量级的 IO 路径没有实际影响。
-- **isolcpus 做不到在线增减**：它是启动参数，改一次重启一次，且内核文档已标为
-  Deprecated、建议改用 cpuset；在「调度域隔离」这一层 isolated 分区与 `isolcpus=domain`
-  是同一件事，差别只剩 `nohz_full` / `rcu_nocbs` / `managed_irq` 这些只能启动时设的
-  项——归入可选的「低抖动启动档」，并且只声明 **SPDK 候选核上限**（如最多 8 核），
-  之后实际给多少核仍由 cgroup 在上限内动态决定；候选核暂时跑 VM 时多付少量
-  context-tracking 开销，故上限不宜划大。
+- **但服务 NVMe/mlx5 时，启动档不是可选项**。上面「三件事」里的 IRQ 打断只对**可迁移
+  IRQ** 成立；NVMe、mlx5 的 **managed IRQ** 写 `smp_affinity_list` 返回 EIO，cgroup 和
+  sysfs 都摘不掉，只有 `isolcpus=managed_irq` 能挡。所以判据是：**SPDK 核上只跑 vfio
+  接管的设备 → isolated 分区够用；核上还有内核态 NVMe/网卡的 IRQ → 必须开启动档**。
+  UI 在勾选 SPDK 池时按这条给提示，不要让用户以为启动档只是「锦上添花」。
+- **isolcpus 做不到在线增减，但 SPDK 本来也增减不了**：它是启动参数，改一次重启一次；
+  在「调度域隔离」这一层 isolated 分区与 `isolcpus=domain` 是同一件事（后者内核文档已标
+  Deprecated、建议改用 cpuset），差别只剩 `nohz_full` / `rcu_nocbs` / `managed_irq`
+  这些只能启动时设、且**未被废弃**的项。而 cgroup 那点在线灵活性对 SPDK 兑现不了——
+  reactor 核集由启动时的 core mask 固定（见下条），在线加核要么靠 dynamic 调度器、
+  要么重启 vhost target。**结论：SPDK 归层 ①，启动档声明 SPDK 候选核上限**
+  （`pools.spdk.cap`，如最多 8 核），之后实际给多少核仍由 cgroup 在上限内动态决定；
+  候选核闲置时只能承载独占绑核的 vCPU、不能并入共享池（§3.1），故上限不宜划大。
 - **在线给 SPDK 加核（cgroup 层可行）**，固定顺序：从 `machine.slice` 的 cpuset 拿掉
   这对 HT（VM 线程自动迁走）→ 写进 `spdk.slice` 的 cpuset（分区保持 isolated）→ 回读
   `cpuset.cpus.partition` 确认不是 `isolated invalid` → 改写现存 IRQ 亲和性 +
@@ -834,7 +876,8 @@ xvirt_placement_ / xvirt_rdt_` 前缀，并放行 `vcpu / from / to / part / lev
 | **P1 · 池化落地** | plan 模型/REST/本地缓存/开机对账；slice AllowedCPUs + memory.min/high/max；**per-VM scope 改造**；编辑模式（核→池拖拽、内存段手柄、2M 大页）+ validate + 异步应用 | ferrovirt（plan/validate/task）、hyper-agent（apply/reconcile + 单元）、lictor（scope 启动）、xvirt-client（编辑器） |
 | **P2 · VM 落位** | vm_config 放置列 + PATCH 扩展；独占绑定（VM→核拖拽 + query-cpus-fast pin）；单节点自动放置 + 显式 vNUMA；模式 C 大页后端；vm_direct collector | ferrovirt、lictor（backend/pin）、hyper-agent（config 传递）、前端（VM 放置 UI + vNUMA 图） |
 | **P2.5 · 自动放置** | §3.10 放置控制器：启动准入 A/B/C + 再平衡（解绑/绑核/换节点/收编）+ 守卫；scope 属性热改 + numa_maps 进度；`placement_event` 审计；**先以 `mode=advise` 上线观察再切 apply**；§6.1 第二/三档可观测性；验证项 #1–#4 | hyper-agent（controller + RDT）、lictor（vm_apply_placement / pin）、ferrovirt（plan 字段 / 事件 / REST）、前端（自动放置卡 + tier 徽标 + 锁定 + 节点监控条） |
-| **P3 · SPDK** | spdk.slice + isolated 分区 + IRQ/workqueue 驱离 + hugetlb 圈占 + 候选核上限 + SPDK 板；可选低抖动启动档（xvirt-init grub drop-in） | hyper-agent、xvirt-init、前端 |
+| **P3 · SPDK** | spdk.slice + isolated 分区 + IRQ/workqueue 驱离 + hugetlb 圈占 + 候选核上限 + SPDK 板 | hyper-agent、前端 |
+| **P3.5 · 低抖动启动档**（层 ①） | grub drop-in 写 `isolcpus=managed_irq,<spdk cpus> nohz_full=… rcu_nocbs=…` + 1G 大页启动预留；开机回读 `/proc/cmdline` 对账；UI 给「需重启」与「SPDK 核上有 managed IRQ」提示。**落点仓库待定**（见 §8） | 装机侧（krait / lycan 二选一）、hyper-agent（对账）、前端 |
 | **P4 · memtier 融合** | 总控读 plan 水位线/预算（替换环境变量常量）；VM 池预算项进压力合成；可选热集 memory.min 同步；水位线 UI 编辑 | hyper-agent（controller.py）、ferrovirt、前端 |
 
 P0/P1 是主体（P1 里 per-VM scope 是全方案的地基，也同时解锁 per-VM 指标直采）；
@@ -869,6 +912,16 @@ xvirt-autotest 加 stage（plan validate/apply 幂等性、缩池阻塞、互斥
   vCPU 出现毛刺——memtier 水位线应设在 high 之前触发（预算项进压力合成正是为此，§3.7）。
 - **vhost-net/内核线程不可归户**：其 CPU 落「内核/其它」段；重 IO 的 VM 会让该段
   偏大，口径说明要写进 tooltip，避免被当成泄漏排查。
+- **低抖动启动档目前是空壳**：`pools.spdk.boot_profile` 有 plan 字段、有 UI 勾选框、
+  diff 也标了 `reboot: true`，但 `apply.py` 收到它只吐一条 `pending_reboot`，**没有任何
+  写 grub 的代码**；且文档此前指定的落点 `xvirt-init` 在现有仓库里并不存在。用户勾上、
+  看到「待重启」、重启完什么也没变——这是会误导人的假开关。在 P3.5 落地前，UI 应把它
+  置灰并注明「未实现」，而不是让它可勾。真正有写 grub 能力的是装机侧的 krait 与 lycan，
+  二选一需先定。
+- **层 ① 与层 ② 的边界要在校验器里守住**：开了启动档后，`isolcpus` 声明的候选核脱离
+  调度域，**不能并入 vm-shared 共享池**（无负载均衡会让共享 VM 堆在一个核上），只能给
+  SPDK 或独占绑核的 vCPU。校验器要按 `/proc/cmdline` 回读的实际候选核集合校验池划分，
+  而不是只信 plan 里的 `cap` 数字——两者不一致（改了 plan 但没重启）必须报 pending_reboot。
 - **systemd 与手写 cgroupfs 的共管边界**：AllowedCPUs 走 systemd（防 daemon-reload
   覆盖）；partition/hugetlb 上限/`memory.oom.group` 走直写 + 开机单元重放；不要两边
   写同一属性。
@@ -913,6 +966,10 @@ xvirt-autotest 加 stage（plan validate/apply 幂等性、缩池阻塞、互斥
 - 内存板的 OS / 虚拟化预留目前是主机级字段，按主机级条拖动，不做逐节点手柄。
 - 浮动 VM 的跨节点内存分布在接入 numastat 采集前按节点数均分估算。
 - 按 memdev 的运行时 NUMA 重绑（`x-memdev-rebind`）未做，vNUMA VM 只在启动时落位。
+- **层 ① 只落地了 sysctl 那条**：`kernel.numa_balancing=0` 已实现；低抖动启动档
+  （`isolcpus=managed_irq` / `nohz_full` / `rcu_nocbs` 的 grub drop-in）与 1G 大页的
+  启动预留均未实现，`boot_profile` 是只读不写的空字段（见 §8）。后果：SPDK 核上若有
+  内核态 NVMe/网卡的 managed IRQ，当前隔离是不完整的。
 - `cpu.weight` 仍是 A 级 10000 / B·C 级 100 两个常量，未按优先级与实测排队延迟动态
   调整——**紧张档下 `priority` 对 CPU 份额不起作用**（§1 非目标里的「CPU 时间片精细
   QoS」尚未开工）。
