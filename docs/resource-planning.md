@@ -994,12 +994,11 @@ xvirt-autotest 加 stage（plan validate/apply 幂等性、缩池阻塞、互斥
   vCPU 出现毛刺——memtier 水位线应设在 high 之前触发（预算项进压力合成正是为此，§3.7）。
 - **vhost-net/内核线程不可归户**：其 CPU 落「内核/其它」段；重 IO 的 VM 会让该段
   偏大，口径说明要写进 tooltip，避免被当成泄漏排查。
-- **低抖动启动档目前是空壳**：`pools.spdk.boot_profile` 有 plan 字段、有 UI 勾选框、
-  diff 也标了 `reboot: true`，但 `apply.py` 收到它只吐一条 `pending_reboot`，**没有任何
-  写 grub 的代码**（文档此前指定的落点 `xvirt-init` 在现有仓库里也并不存在）。用户勾上、
-  看到「待重启」、重启完什么也没变——这是会误导人的假开关。**在 P3.5 落地前，UI 应把它
-  置灰并注明「未实现」**，而不是让它可勾。落点已定为 hyper-agent（§3.8），装机侧只写
-  首装默认值。
+- **启动档的失败必须区分「待重启」与「没写成」**：`update-grub` 失败时报 `failed` 而不是
+  `pending_reboot`——后者会让用户以为重启就好了，实际上重启后依然没有参数。同理，
+  「配置文件已写」不等于「已生效」，对账口径只认 `/proc/cmdline`。
+- **摘除启动档要留痕**：删掉 drop-in 并 `update-grub` 之后，当前内核仍带着旧参数，
+  必须如实报「cmdline 残留 …，重启后失效」，不能直接报 `unchanged`。
 - **层 ① 与层 ② 的边界要在校验器里守住**：开了启动档后，`isolcpus` 声明的候选核脱离
   调度域，**不能并入 vm-shared 共享池**（无负载均衡会让共享 VM 堆在一个核上），只能给
   SPDK 或独占绑核的 vCPU。校验器要按 `/proc/cmdline` 回读的实际候选核集合校验池划分，
@@ -1043,9 +1042,12 @@ xvirt-autotest 加 stage（plan validate/apply 幂等性、缩池阻塞、互斥
 | §6.1 可观测性 | **已实现**（2026-09-14）：第二档 NUMA 分布与节点健康（vcpu 落点、remote_mem_ratio、numastat/vmstat/distance、六分量健康分）；第三档 RDT MBM 实测带宽 + schedstat 排队延迟（`rdt.py`，含无硬件安全降级） |
 | §6.2 页面 | **已实现**（2026-09-14）：NodeHealthBoard 节点监控条、虚拟机 NUMA 分布视图（按远端访存降序）、实测/估计区分 |
 | P3 SPDK | **基础已实现**：spdk.slice isolated 分区、IRQ / workqueue 驱离、irqbalance drop-in、大页圈占、候选核上限 `cap` |
+| **P3.5 低抖动启动档** | **已实现**（2026-09-18，分支 `feat/boot-profile`）：`bootprofile.py` 写 grub.d drop-in + `update-grub`，按 `/proc/cmdline` 幂等对账；`plan.boot_candidate_cpus` / `shared_cpus`；三条 block + 四条 warn 校验；候选核排除出 `machine-shared.slice` 与 B/C 级 AllowedCPUs；`tests/test_bootprofile.py` 31 例 |
 | P4 memtier 融合 | **已实现**：水位线 / PSI 满刻度 / VM 池预算从 plan 读取，VM 池挤占度并入压力合成 |
 
 **单测覆盖**：`hyper-agent/tests/test_resource_plan.py` 12 例（plan 纯函数）、
+`tests/test_bootprofile.py` 31 例（候选核推导与稳定性、drop-in 只碰 `GRUB_CMDLINE_LINUX`、
+cmdline 对账四态、update-grub 回退与失败、摘除与残留、护栏）、
 `tests/test_placement.py` 33 例（归节点、远端比例四情形、健康分取最大值/分级/归一化/
 空值不污染、实测优先与估计回落、runq 归一、RDT 比例与带宽换算、无硬件安全降级）。
 
@@ -1054,11 +1056,12 @@ xvirt-autotest 加 stage（plan validate/apply 幂等性、缩池阻塞、互斥
 - 内存板的 OS / 虚拟化预留目前是主机级字段，按主机级条拖动，不做逐节点手柄。
 - 浮动 VM 的跨节点内存分布在接入 numastat 采集前按节点数均分估算。
 - 按 memdev 的运行时 NUMA 重绑（`x-memdev-rebind`）未做，vNUMA VM 只在启动时落位。
-- **层 ① 只落地了 sysctl 那条**：`kernel.numa_balancing=0` 已实现；低抖动启动档
-  （`isolcpus=managed_irq` / `nohz_full` / `rcu_nocbs` 的 grub drop-in）与 1G 大页的
-  启动预留均未实现，`boot_profile` 是只读不写的空字段（见 §8）。后果：SPDK 核上若有
-  内核态 NVMe/网卡的 managed IRQ，当前隔离是不完整的。**落点已定：hyper-agent 实现 +
-  对账，lycan 只写首装默认值，设计见 §3.8；待开工。**
+- **层 ① 的候选核落位固定为「SPDK 池所在节点的尾部物理核」**，不可手工指定具体核；
+  SPDK 池为空时取最后一个节点。跨节点搬 SPDK 会改变候选集、需重启（语义正确，但 UI
+  要提示）。若将来需要精确指定，再加 `pools.spdk.cap_cpus` 显式列表。
+- **`solve()` 的 `min_shared_threads` 仍按整个 vm 池计数**，未扣除启动档候选核；开了
+  启动档后这个门槛会略松（候选核被算成可留给共享的核）。`node_stats` 的 oc 分母已扣除，
+  影响面仅限 A 级装箱时的保留判断。
 - `cpu.weight` 仍是 A 级 10000 / B·C 级 100 两个常量，未按优先级与实测排队延迟动态
   调整——**紧张档下 `priority` 对 CPU 份额不起作用**（§1 非目标里的「CPU 时间片精细
   QoS」尚未开工）。
