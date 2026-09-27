@@ -7,6 +7,8 @@ GitHub 远端：`https://github.com/liu-weifeng`
 
 验证补充：仓库可访问性验证结果见 `xvirt-repository-address-validation.md`。GitHub 私有仓应使用 SSH 地址 `git@github.com:liu-weifeng/<repo>.git` 验证；本索引中的 GitHub HTTPS 地址主要用于阅读/展示。
 
+2026-09-27 更新：新增 `cdp` 仓库；`qemu` 默认分支切换为 `stable-11.1-dev`。当前主工作区为 `192.168.60.103:/root/work/ferrostack`，已从 `192.168.60.105` 全量 clone 下表全部仓库并新增 `cdp`（共 25 个）；表中“当前路径”列仍为旧 `/root/code/xvirt` 工作区的历史记录，仅 `cdp` 记录新工作区路径。
+
 ## 1. 仓库地址规则
 
 当前 `/root/code/xvirt` 工作区里，多数 remote 仍指向旧地址：
@@ -44,7 +46,7 @@ git@github.com:liu-weifeng/<repo>.git
 | hyper-agent | `/root/code/xvirt/hyper-agent` | main | `a779104` | Python 宿主机 agent：存储/网络/硬件/文件/petrel/memtier，VM 类 action 转 lictor | `ssh://git@192.168.60.105:2222/liuwfng/hyper-agent.git` | `https://github.com/liu-weifeng/hyper-agent.git` |
 | lictor | `/root/code/xvirt/lictor` | main | `2daa170` | Python QMP owner：VM 生命周期、快照、迁移、热插拔、console、xvirt-tools | `ssh://git@192.168.60.105:2222/liuwfng/lictor.git` | `https://github.com/liu-weifeng/lictor.git` |
 | concilium | `/root/code/xvirt/concilium` | main | `7019d54` | C 集群资源管理，驱动 xvirt-vm RA 到 lictor | `ssh://git@192.168.60.105:2222/liuwfng/concilium.git` | `https://github.com/liu-weifeng/concilium.git` |
-| qemu | `/root/code/xvirt/qemu` | stable-10.0-dev | `0fdc2fe5b0` | 自研 QEMU fork：CBT bitmap、memtier、迁移、vhost/petrel 相关改造 | `ssh://git@192.168.60.105:2222/liuwfng/qemu.git` | `https://github.com/liu-weifeng/qemu.git` |
+| qemu | `/root/code/xvirt/qemu` | stable-11.1-dev | `46c00088e5` | 自研 QEMU fork：CBT bitmap、memtier、迁移、vhost/petrel 相关改造 | `ssh://git@192.168.60.105:2222/liuwfng/qemu.git` | `https://github.com/liu-weifeng/qemu.git` |
 
 ## 3. 存储、快照、备份与数据面仓库
 
@@ -54,6 +56,7 @@ git@github.com:liu-weifeng/<repo>.git
 | aegis-sdk | `/root/code/xvirt/aegis-sdk` | main | `ac0c5f0` | C VDDK-like 备份 SDK，`libaegisdisk.so`、`aegis-cbt`、CBT 读盘 | `ssh://git@192.168.60.105:2222/liuwfng/aegis-sdk.git` | `https://github.com/liu-weifeng/aegis-sdk.git` |
 | cdp-agent | `/root/code/xvirt/cdp-agent` | main | `498f026` | guest 内 CDP：Rust agent + Linux/Windows capture driver + cdp-sink | `ssh://git@192.168.60.105:2222/liuwfng/cdp-agent.git` | `https://github.com/liu-weifeng/cdp-agent.git` |
 | cdp-worker | `/root/code/xvirt/cdp-worker` | main | `624a01f` | 旧/旁路 CDP worker，IO 日志、索引、位图与降级模型 | `ssh://git@192.168.60.105:2222/liuwfng/cdp-worker.git` | `https://github.com/liu-weifeng/cdp-worker.git` |
+| cdp | `/root/work/ferrostack/cdp` | main | `1936383` | 新 CDP 实现（CMake：common/plugins/tools/worker/tests），cdpwork 数据面，format-v2 格式 | `ssh://git@192.168.60.105:2222/liuwfng/cdp.git` | `https://github.com/liu-weifeng/cdp.git` |
 | snapshot-helper | `/root/code/xvirt/snapshot-helper` | main | `6ab1a4f` | QEMU 内存快照 helper，将追加迁移流改为稀疏页覆写文件 | `ssh://git@192.168.60.105:2222/liuwfng/snapshot-helper.git` | `https://github.com/liu-weifeng/snapshot-helper.git` |
 | xvirt-snapmig | `/root/code/xvirt/xvirt-snapmig` | main | `805411e` | 跨存储 snapshot chain 迁移工具/数据路径 | `ssh://git@192.168.60.105:2222/liuwfng/xvirt-snapmig.git` | `https://github.com/liu-weifeng/xvirt-snapmig.git` |
 | xvirt-blockdiff | `/root/code/xvirt/xvirt-blockdiff` | main | `0b4c8da` | 块级 diff / xvdiff 相关工具，用于 petrel/OCFS2 snapshot-chain interop | `ssh://git@192.168.60.105:2222/liuwfng/xvirt-blockdiff.git` | `https://github.com/liu-weifeng/xvirt-blockdiff.git` |
@@ -101,6 +104,7 @@ git@github.com:liu-weifeng/<repo>.git
 - `xvirt-libs`
 - `cdp-agent`
 - `cdp-worker`
+- `cdp`
 
 ### 6.3 安装部署专题
 

@@ -3,6 +3,7 @@
 # ferrostack parent repo; develop/commit inside each one independently.
 /aegis-sdk/
 /build-deb/
+/cdp/
 /cdp-agent/
 /cdp-worker/
 /concilium/
