@@ -12,7 +12,7 @@
 > [`../qemu-memory-tiering-tech-design.md`](../qemu-memory-tiering-tech-design.md) §12（共享后备热迁移）、
 > `../snapshot-helper/src/README.md`（快照文件格式）、`../virt-control/docs/snapshot.md`（快照总体流程）。
 >
-> 状态：设计稿（2026-10-15）。进度：§6.1 QEMU 两处必改已提交到 qemu `stable-11.1-dev`（待编译与真机验证）；§3 创建流程与 §4 恢复的 keep 路径（场景 A）已在 lictor / hyper-agent 落地（28 个单测，真机未验）；§4 的 merge（场景 B）等 §5 helper 落地；§7 控制面未动。
+> 状态：设计稿（2026-10-15）。进度：§6.1 QEMU 两处必改已提交到 qemu `stable-11.1-dev`（待编译与真机验证）；§3 创建流程与 §4 恢复的 keep 路径（场景 A）已在 lictor / hyper-agent 落地（28 个单测，真机未验）；§5 snapshot-helper 三种模式（keep / keep+改路径 / merge）与 `--info` 已实现并通过 selftest；lictor 侧 `memtier_restore=merge` 尚未接到 helper 参数；§7 控制面未动。
 
 ---
 
@@ -169,7 +169,11 @@ merge 会把宿主打爆。
 
 ---
 
-## 5. snapshot-helper 改动
+## 5. snapshot-helper 改动 — 已实现
+
+实现落在 `snapshot-helper/src/memtier.{c,h}`（定位 / 解析 / 重序列化 memtier 段）、
+`restore.h`（`struct restore_opts`）、`restore.c`（三种模式、`--info`）、`save.c`（记索引）。
+selftest 增加 memtier 段与后端副本 fixture，三种恢复各做一次字节级校验；无告警。
 
 ### 5.1 文件格式扩展（版本号保持 1）
 
@@ -177,7 +181,7 @@ merge 会把宿主打爆。
 #define SNAPHLP_F_MEMTIER   0x1   /* flags: epilogue 内含 memtier 段，快照依赖外部分层文件 */
 
 /* 占用 SnapHelpIndex.reserved[60] 的前 24 字节（老文件为 0）： */
-uint64_t memtier_sect_off;   /* epilogue 内偏移（相对 epilogue_off），含段头，含 FOOTER */
+uint64_t memtier_sect_off;   /* 绝对文件偏移（落在 epilogue 区间内），含段头，含 FOOTER */
 uint64_t memtier_sect_len;
 uint64_t memtier_pages;      /* 所有 region n_swapped 之和，供 --info / 空间估算 */
 ```
@@ -217,7 +221,9 @@ snapshot-helper FILE 0 [--memtier=keep|merge] [--memtier-backing=PATH] [--memtie
   3. epilogue 发 `[0, off)` 与 `[off+len, end)` 两段，剔除 memtier 段。QEMU 的
      `QEMU_VM_VMDESCRIPTION`（JSON）里仍列有 memtier，加载端对 vmdesc 只做提示不校验，无影响。
   4. `flags` 没有 `SNAPHLP_F_MEMTIER` 却指定 `merge` → 报错退出。
-- `--info`（可选）：打印索引，含 memtier 依赖与页数。
+- `--info FILENAME`：打印索引，含 memtier 依赖、各 region 路径与换出页数。
+- 参数组合校验：`--memtier*` 只在 restore 模式接受；merge 必须带 backing；keep 才能带
+  `--memtier-path`；merge 时后端副本必须容纳所有被引用 slot，否则拒绝。
 
 `--size-hint` 不变（仍以 RAM 为上界）。selftest 增加一组带 memtier 段的流做 keep / merge /
 path 改写三种往返校验。
