@@ -12,7 +12,7 @@
 > [`../qemu-memory-tiering-tech-design.md`](../qemu-memory-tiering-tech-design.md) §12（共享后备热迁移）、
 > `../snapshot-helper/src/README.md`（快照文件格式）、`../virt-control/docs/snapshot.md`（快照总体流程）。
 >
-> 状态：**设计稿，未动代码**（2026-10-15）。
+> 状态：设计稿（2026-10-15）。进度：§6.1 QEMU 两处必改已提交到 qemu `stable-11.1-dev`（待 112 构建机编译与真机验证），其余未动。
 
 ---
 
@@ -210,15 +210,16 @@ path 改写三种往返校验。
 
 ## 6. QEMU 改动
 
-### 6.1 必做
+### 6.1 必做（已实现，待编译验证）
 
 1. **quiesce 延长到 `cont`。** 现在 `ram_save_cleanup → memtier_migration_src_end()` 在迁移
    完成时立刻放开 worker。改为：`src_end` 时若 runstate 不是 RUNNING，把 `migrating` 的清除
    推迟到 vm change state handler（RUNNING 时释放）；迁移失败路径保持立即释放。
    编排侧兜底（不推荐单独依赖）：快照前 `x-memtier-set-policy psi-trigger=100,
    target-resident-mb=min`，完成后恢复；但会与 hyper-agent 总控 5s 一拍的 set-policy 竞争。
-2. **`memtier_dst_restore` 加校验**：`slot < nr_slots`、slot 不重复、后端大小 ≥ 最大 slot；
-   不满足直接 `error_setg` 拒绝加载，而不是运行期缺页读越界。
+2. **`memtier_dst_restore` 加校验**：`slot < nr_slots`（即后端大小 ≥ 最大 slot）、slot 不重复、
+   gfn 不越界不重复；先整体校验再 `MADV_DONTNEED`，不满足直接 `error_setg` 拒绝加载并 teardown，
+   而不是运行期缺页读越界。`slot_reserve()` 改为返回 bool。
 
 ### 6.2 可选
 

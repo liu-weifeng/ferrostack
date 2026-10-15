@@ -626,11 +626,11 @@ sequenceDiagram
 2. **换出页不走网络**：`migration_bitmap_clear_memtier_swapped()` 对每个 SWAPPED 页 `test_and_clear_bit` 清脏位并递减 `migration_dirty_pages`（做法对齐既有的 discarded-pages 处理）；
 3. **换入重脏**：quiesce 后被动换入仍允许（guest 体验优先）。换入使页离开共享卷（slot 已释放），两个 fault 路径都检测 `migrating` 并 `memory_region_set_dirty()`——下次位图同步把它当普通脏页发送；
 4. **首轮只发冷页（feature-4）**：memtier 自身就是热度源——`fault_tick` 在 4 秒内（刚换入或刚被写回滚）的 RESIDENT 页视为"很可能再变脏"的热页。首轮 iterate 前把它们的脏位暂存进每 block 影子位图（`ram_find_and_save_block` 自然跳过），轮末 OR 回去，热页在后续轮随脏页走。收益：避免热页"首轮发一遍、变脏再发一遍"的重复传输；
-5. **失败恢复**：`ram_save_cleanup → memtier_migration_src_end()` 清 `migrating`，worker 恢复换出。
+5. **释放时机**：`ram_save_cleanup → memtier_migration_src_end()`。若此时 VM 仍处于停止态（迁移到文件/fd 做内存快照后停在 postmigrate，或失败时 VM 尚未被拉起），释放推迟到下一次 RUNNING 转换（vm change state handler）；VM 运行中则立即清 `migrating`，worker 恢复换出。停机期间无 guest 缺页、也不换出/换回，流里记录的 (gfn, slot) 集合在后备上保持稳定，供编排复制后备文件（见 `docs/memtier-snapshot-design.md`）。
 
 ### 12.3 目的端要点
 
-"memtier" savevm 段（`register_savevm_live`，在 `migration_object_init` 无条件注册——目的端从未跑过 enable 也必须能加载）。`memtier_dst_restore()` 在 VM 尚未运行时执行：完整 `tier_init`（打开同一共享卷、注册 uffd、建三个 ring），然后逐对 (gfn,slot)：置 `SWAPPED`、`slot_reserve()`（防该 slot 被将来换出复用）、`MADV_DONTNEED`。启动两线程后，目的端天然继续处于分层状态，冷页按需从共享卷故障读回——**迁移停机时间与换出量无关**。
+"memtier" savevm 段（`register_savevm_live`，在 `migration_object_init` 无条件注册——目的端从未跑过 enable 也必须能加载）。`memtier_dst_restore()` 在 VM 尚未运行时执行：完整 `tier_init`（打开同一共享卷、注册 uffd、建三个 ring），然后先整体校验 (gfn,slot) 列表（gfn 越界、gfn 重复、slot 超出后备容量或重复 → 直接拒绝加载并 teardown，不会对着错误的后备文件服务缺页），再逐对置 `SWAPPED`、`slot_reserve()`（防该 slot 被将来换出复用）、`MADV_DONTNEED`。启动两线程后，目的端天然继续处于分层状态，冷页按需从共享卷故障读回——**迁移停机时间与换出量无关**。
 
 序列化格式（版本 1，stop-copy 阶段、VM 已停）：
 
