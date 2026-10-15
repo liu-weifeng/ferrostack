@@ -10,12 +10,14 @@
 
 
 > **实现状态（2026-10-15）**：已在 qemu `memtier-stats` 分支实现（提交 "memtier: swap-cache"），
-> 与本文差异：(1) 换入发布用 `UFFDIO_COPY_MODE_WP` 一步到位，不支持时回退 copy+WP+wake；
-> (2) 发布与状态更新之间的写竞争用新增状态 `FAULTING_IN_DIRTIED` 记录，发布方据此落到
-> RESIDENT；(3) 迁移 quiesce **不**转换 RESIDENT_CLEAN（它在 RAM 中、会被正常发送，slot 在
-> 目的端只是闲置）；(4) 零页优先：RESIDENT_CLEAN 且全零的页走零页不落盘路径并释放 slot；
-> (5) 后端满时 `memtier_reclaim_clean_slots` 从游标处批量降级干净页。实测见
-> `memtier-nvme-wear.md` §4.6。
+> 但与本文的核心机制不同，原因见 `memtier-nvme-wear.md` §4.6：
+> (1) **换入时不写保护**。KVM 处理 EPT 缺页时无论读写都以写意图钉页，换入后第一次读就触发
+> WP 缺页（实测 39 万读 → 39 万 WP 缺页），uffd-WP 判不了"干净"；`RESIDENT_CLEAN` 的页可写。
+> (2) **换出时按 128 位 MurmurHash3 比对**：换入时记哈希（16B/页），换出写保护后重算，相等即免写
+> 在原 slot 上 `SWAPPED`，不同则写回原 slot；`swapcache-verify` 旋钮可额外读回逐字节比对。
+> 读回比对的精确版本做过，SET 吞吐掉 25%，改为哈希。
+> (3) 迁移 quiesce 不转换 `RESIDENT_CLEAN`；(4) 零页优先走零页不落盘并释放 slot；
+> (5) 后端满时 `memtier_reclaim_clean_slots` 从游标处批量降级干净页。
 
 ---
 

@@ -5,7 +5,7 @@
 > （`evict-ios / evict-io-bytes / evict-io-hist / evict-zero-pages / evict-reevict-pages /
 > evict-sampled-pages / evict-sampled-clean-pages`，qemu 分支 `memtier-stats`）。
 >
-> 状态：统计项与零页不落盘已实现（qemu `memtier-stats` 分支）；baseline 与零页对比实测见 §4（2026-10-15）。
+> 状态：统计项、零页不落盘、swap-cache 已实现（qemu `memtier-stats` 分支）；对比实测见 §4，写量较 baseline 少 22%（2026-10-15）。
 
 ---
 
@@ -126,14 +126,51 @@ run 不发 IO。没有新增页状态，memtier 段与快照格式不变。
 仍会写（随后丢弃），损失约 5%，与"run 很短"的预期一致。redis 灌满的客户机零页只有
 7.5%，收益即为 7%；普通客户机（空闲内存多、页回收后清零）零页比例高得多，收益随之放大。
 
+### 4.6 swap-cache（方案 A-2）实测与两次改道
+
+实现：qemu `memtier-stats` 分支 "memtier: swap-cache"。换入的页保留 slot（状态
+`RESIDENT_CLEAN`），再换出时若内容未变则不写，直接在原 slot 上 `SWAPPED`。
+
+**改道一：uffd 写保护在 KVM 下判不了"干净"。** 原设计靠换入时写保护、靠 WP 缺页判脏。实测
+纯只读遍历 39 万个换出页产生 39 万次 WP 缺页：KVM 处理 EPT 缺页时无论客户机读写都以写意图
+把页钉住，换入后的第一次读就把写保护打掉了。所以换入时不再写保护，改为**换出时比对内容**。
+
+**改道二：按读回比对太慢。** 先做了"换出时读回 slot 逐字节比对"的精确版本，正确性测试全过，
+但干净页的换出从零 IO 变成一次读（约 70µs），redis SET 阶段吞吐掉了约 25%（34k → 26.5k rps）。
+把比对改成 **128 位 MurmurHash3**：换入时记页哈希（16B/页），换出时重算比对；相等即视为未变
+（碰撞概率 2^-128），不同则写回原 slot。保留 `swapcache-verify` 旋钮可额外读回比对。
+指纹不同的页直接写回自己的 slot，不再申请新 slot。
+
+同一流程重跑（哈希模式）：
+
+| 指标 | baseline | 零页不落盘 | 零页 + swap-cache |
+|---|---|---|---|
+| 换出页数 | 1,499,453 | 1,396,330 | 1,386,968 |
+| 后端写字节 | 5.72 GiB | 4.95 GiB | **4.44 GiB** |
+| 写次数 | 487,897 | 448,248 | **373,559** |
+| 写量 / 换出量 | 100% | 93% | **84%** |
+| 再换出页 / 其中未变（免写） | 9.0% / 无 | 9.3% / 无 | 107,982 / **107,052（99.1%）** |
+| 驻留中持有 slot 的干净页 | 无 | 无 | 2.5 GiB |
+| GET rps / p99 | 28.6k / 3.50ms | 28.6k / 3.62ms | **30.1k / 3.40ms** |
+| SET rps / p99 | 34.1k / 3.14ms | 37.0k / 3.01ms | **43.8k / 2.33ms** |
+| swapin-errors / evict-aborts | 0 / 1 | 0 / 0 | 0 / 0 |
+
+写量比 baseline 少 22%，写次数少 23%；吞吐反而更好，因为干净页的换出不再与缺页读抢 NVMe。
+完整性测试（`iopoll/integrity-run.sh`：确定性值 100 万键，强制换出 → 校验 → 压低下限
+强制干净页再换出 → 再校验 → 覆写 → 再换出 → 校验 → disable 收敛 → 校验）全部通过。
+
+代价与约束：每客户机页 16B 哈希（32GB 客户机 128MB）；换入与干净页换出各约 1.5µs 哈希
+计算；干净页占用 slot，后端需 ≥ 客户机 RAM，满时按游标批量降级干净页释放 slot
+（`clean-slot-reclaims`）；SPDK 后端暂不走此路径。
+
 ## 5. 优化方案
 
 ### 方案 A：降写入量（P0）
 
 1. **零页不落盘**（已实现，见 §4.5）：换出时 `buffer_is_zero`，零页不写、不占 slot，
    状态保持 RESIDENT 等价"从未填充"，缺页走已有的 `UFFDIO_ZEROPAGE` 路径。
-2. **swap-cache**：按 `memtier-swapcache-design.md` 实现 `RESIDENT_CLEAN`，换入后保留 slot
-   并写保护，未改的页再换出零 IO。后端需 ≥ 客户机 RAM（现有预分配已满足）。
+2. **swap-cache**（已实现，见 §4.6）：换入后保留 slot，记 128 位哈希，再换出时哈希未变则
+   零 IO。写保护在 KVM 下不可用（读也会打掉），读回比对又太慢，故用哈希。后端需 ≥ 客户机 RAM。
 3. **主机级写入预算**：hyper-agent 总控按盘 TBW 与目标寿命折算日预算，以
    `data_units_written` 闭环压 `max-evict-mbps`。纯编排改动。
 

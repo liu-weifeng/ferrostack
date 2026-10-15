@@ -120,7 +120,10 @@ uffd poll 循环：MISSING 缺页 → io_uring 读回 → UFFDIO_COPY 填回 →
 后端写入统计（NVMe 磨损研究，见 [`memtier-nvme-wear.md`](./memtier-nvme-wear.md)）：
 `evict-ios / evict-io-bytes / evict-io-hist`（写次数、字节、按 4K…1M+ 分桶的大小直方图）、
 `evict-zero-pages`（换出时全零、未写后端的页）、`zero-fills`（用零页填回的缺页）、`evict-reevict-pages`（换入后再次换出的页）、
-`evict-sampled-pages / evict-sampled-clean-pages`（每 32 个 gfn 抽样比对换入时 crc，估算再换出中内容未变的比例）。
+`evict-sampled-pages / evict-sampled-clean-pages`（再换出页与换入时哈希比对，未变的比例）；
+swap-cache：`clean-resident-bytes`（驻留且仍持有 slot 的页）、`evict-clean-pages`（免写的再换出）、
+`evict-verify-reads`、`clean-slot-reclaims`；诊断：`wp-faults-evicting / wp-faults-other`。
+旋钮 `swapcache-verify`（默认关）让哈希相等的页再读回逐字节比对。
 
 ### 3.1 策略预设
 
