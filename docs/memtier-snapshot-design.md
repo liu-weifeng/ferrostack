@@ -12,7 +12,7 @@
 > [`../qemu-memory-tiering-tech-design.md`](../qemu-memory-tiering-tech-design.md) §12（共享后备热迁移）、
 > `../snapshot-helper/src/README.md`（快照文件格式）、`../virt-control/docs/snapshot.md`（快照总体流程）。
 >
-> 状态：设计稿（2026-10-15）。进度：§6.1 QEMU 两处必改已提交到 qemu `stable-11.1-dev`（待编译与真机验证）；§3 创建流程已在 lictor / hyper-agent 落地（13 个单测，真机未验）；§4 恢复、§5 helper、§7 控制面未动。
+> 状态：设计稿（2026-10-15）。进度：§6.1 QEMU 两处必改已提交到 qemu `stable-11.1-dev`（待编译与真机验证）；§3 创建流程与 §4 恢复的 keep 路径（场景 A）已在 lictor / hyper-agent 落地（28 个单测，真机未验）；§4 的 merge（场景 B）等 §5 helper 落地；§7 控制面未动。
 
 ---
 
@@ -128,7 +128,7 @@ snapshot-helper 侧：ITERATE 只处理 ram 的 `SECTION_PART/END`，之后所�
 B 的零改动兜底：先按 A 恢复再 `x-memtier-disable` 强制收敛。只适合「同宿主、带 memtier、
 想退出分层」，不能替代 helper 合并（目标 QEMU 无 memtier 时走不通）。
 
-### 4.1 恢复流程（lictor `snapshot_revert`，restore-memory 步）
+### 4.1 恢复流程（lictor `snapshot_revert`，restore-memory 步）— keep 已实现
 
 ```
  1. 磁盘 reflink 回写（不变）
@@ -143,9 +143,17 @@ B 的零改动兜底：先按 A 恢复再 `x-memtier-disable` 强制收敛。只
      （memtier 段只带 policy，不带 tunables）；未启用（场景 B/B'）→ 照旧 enable 或跳过
 ```
 
+实现要点：`_memtier_resolve_artifacts` 优先用 controller 回传的 `memtier_artifacts`
+（create 结果 `memtier.regions`），否则按 `<memory 去扩展名>.memtier*.raw` 约定 glob，单 region
+时活动路径取 sidecar `path`，多 region 必须由 controller 给映射；`_memtier_restore_backing`
+在 `launch_vm` 之前 unlink 旧活动后端 → reflink 到 tmp → rename。`launch_vm` 的 `-incoming`
+分支补上了 `_memtier_enable_on_start` 调用（原来只在普通启动调），该函数改为幂等：
+`x-memtier-query` 已有启用 region 就只 `x-memtier-set-policy` 回放 sidecar，否则照旧 enable。
+结果多一个 `memtier_restored` 字段。`memtier_restore=merge` 目前明确报错。
+
 ### 4.2 模式选择
 
-revert 参数新增 `memtier_restore = auto | keep | merge`，默认 `auto`：
+revert 参数新增 `memtier_restore = auto | keep | merge`，默认 `auto`（目前 auto 等价 keep）：
 
 ```
 目标 QEMU 带 memtier？ ──否──▶ 宿主空闲内存 ≥ RAM？ ──是──▶ merge
