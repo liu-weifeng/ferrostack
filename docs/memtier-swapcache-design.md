@@ -8,6 +8,15 @@
 > 就一直有效;再次换出该干净页时**只 `MADV_DONTNEED` 复用原 slot,不写盘**(零 IO,等价于内核
 > 丢弃干净 swap-cache 页)。页被写过才作废 slot、转脏、按原路写回。
 
+
+> **实现状态（2026-10-15）**：已在 qemu `memtier-stats` 分支实现（提交 "memtier: swap-cache"），
+> 与本文差异：(1) 换入发布用 `UFFDIO_COPY_MODE_WP` 一步到位，不支持时回退 copy+WP+wake；
+> (2) 发布与状态更新之间的写竞争用新增状态 `FAULTING_IN_DIRTIED` 记录，发布方据此落到
+> RESIDENT；(3) 迁移 quiesce **不**转换 RESIDENT_CLEAN（它在 RAM 中、会被正常发送，slot 在
+> 目的端只是闲置）；(4) 零页优先：RESIDENT_CLEAN 且全零的页走零页不落盘路径并释放 slot；
+> (5) 后端满时 `memtier_reclaim_clean_slots` 从游标处批量降级干净页。实测见
+> `memtier-nvme-wear.md` §4.6。
+
 ---
 
 ## 1. 状态机
