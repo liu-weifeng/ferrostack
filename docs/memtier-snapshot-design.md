@@ -12,7 +12,7 @@
 > [`../qemu-memory-tiering-tech-design.md`](../qemu-memory-tiering-tech-design.md) §12（共享后备热迁移）、
 > `../snapshot-helper/src/README.md`（快照文件格式）、`../virt-control/docs/snapshot.md`（快照总体流程）。
 >
-> 状态：设计稿（2026-10-15）。进度：§6.1 QEMU 两处必改已提交到 qemu `stable-11.1-dev`（待 112 构建机编译与真机验证），其余未动。
+> 状态：设计稿（2026-10-15）。进度：§6.1 QEMU 两处必改已提交到 qemu `stable-11.1-dev`（待编译与真机验证）；§3 创建流程已在 lictor / hyper-agent 落地（13 个单测，真机未验）；§4 恢复、§5 helper、§7 控制面未动。
 
 ---
 
@@ -52,26 +52,27 @@ snapshot-helper 侧：ITERATE 只处理 ram 的 `SECTION_PART/END`，之后所�
 
 ```
 <snapshot_dir>/
-  memory/<snap>.state          snapshot-helper v1：页区只含常驻页；epilogue 内含 memtier 段
-  memory/<snap>.memtier.raw    快照时刻后端文件的副本，slot 偏移与活动后端完全一致
+  snapshots/<snap>.memory       snapshot-helper v1：页区只含常驻页；epilogue 内含 memtier 段
+  snapshots/<snap>.memtier.raw  快照时刻后端文件的副本，slot 偏移与活动后端完全一致
+                                （多 region 时为 <snap>.memtier.<region id>.raw）
   disks/ config/ …             不变
 ```
 
 | 文件 | 实际占用 |
 |---|---|
-| `.state` | ≈ 常驻量（页区稀疏，位图只标常驻页） |
+| `.memory` | ≈ 常驻量（页区稀疏，位图只标常驻页） |
 | `.memtier.raw` | reflink 副本：初始 0，活动后端随后被改写的 slot 才 CoW；上限 = 后端大小 |
 
 **核心不变量：后端副本保持与活动后端相同的 slot 偏移，memtier 段里的 `path` 仍是活动路径。**
 恢复时把副本拷回活动路径即可，与磁盘的 reflink 回写同构，QEMU 不需要任何路径改写。
 
-否决的替代方案：把换出页合并进 `.state` 页区做成单文件。能做（按 gfn→slot 从后端读入页区），
+否决的替代方案：把换出页合并进 `.memory` 页区做成单文件。能做（按 gfn→slot 从后端读入页区），
 但快照拷贝量 ∝ 换出量，恢复时所有页常驻需要全量 RAM，违背分层目的。不过这个「合并」动作
 放到**恢复时**做就是 §4 的场景 B，所以合并能力保留，只是时机后移。
 
 ---
 
-## 3. 快照创建流程（lictor `_live_memory_snapshot`）
+## 3. 快照创建流程（lictor `_live_memory_snapshot`）— 已实现
 
 在现有 9 步流程上增加 3 处（★）：
 
@@ -84,7 +85,7 @@ snapshot-helper 侧：ITERATE 只处理 ram 的 `SECTION_PART/END`，之后所�
  4. migrate uri=fd:snap-mem-<sid>
  5. 等 MIGRATION/completed，run-state=postmigrate；等 helper exit 0
  6. 各盘 cp --reflink=always
-★6a. cp --reflink=always <vm_dir>/memtier-backing.raw <snap>/memory/<snap>.memtier.raw
+★6a. cp --reflink=always <vm_dir>/memtier-backing.raw <vm_dir>/snapshots/<snap>.memtier.raw
      （VM 已停、换出已 quiesce、后端稳定）
  7. flip magic → LibvirtQemudSave
  8. cont
@@ -98,8 +99,15 @@ snapshot-helper 侧：ITERATE 只处理 ram 的 `SECTION_PART/END`，之后所�
 - **quiesce 必须持续到 `cont`**（QEMU 改动，见 §6.1）。否则 worker 在 postmigrate 期间可能
   主动换回（`slot_free`）再换出复用该 slot，在 6a 之前覆盖快照引用的数据。
 - feature-4 的「首轮只发冷页」随能力一并生效，对快照只影响发送顺序，无害。
-- 后端不可 reflink（裸设备、SPDK、petrel 卷 `backing_kind=petrel`）时，v1 回退到既有的
-  「先 `x-memtier-disable` 再快照」路径并在 API 返回中标明；v2 用 §6.1 的导出命令。
+- 后端不可 reflink（裸设备、SPDK、petrel 卷 `backing_kind=petrel`）或 QEMU 不认该能力时，
+  v1 退化为**不开能力**：迁移线程自己把换出页缺页读回，快照仍完整、VM 仍保持分层，只是慢且
+  占 RAM；结果里 `memtier.mode=converged` 标明。比「先 disable 再快照」少一次拆建分层。
+  v2 用 §6.2 的导出命令覆盖这类后端。
+- 是否分层以 `x-memtier-query` 为准，不读 sidecar（sidecar 只是意图，启用可能失败）。
+- 实现：`lictor/vm/snapshot.py` 的 `_memtier_snapshot_plan` / `_memtier_set_capability` /
+  `_memtier_copy_backing`，`snapshot_create` 结果多一个 `memtier` 字段（`mode`、`regions[]`
+  含 `backing_path` / `artifact_path` / `swapped_bytes`）；`snapshot_delete` 按
+  `<memory 去扩展名>.memtier*.raw` 约定兜底清理。单测 `tests/test_snapshot_memtier.py`。
 - paused 状态的 VM 走同一路径（QEMU 把 paused 上的 migrate 视为无脏页直接 stop-and-copy）。
 
 ---
@@ -125,7 +133,7 @@ B 的零改动兜底：先按 A 恢复再 `x-memtier-disable` 强制收敛。只
 ```
  1. 磁盘 reflink 回写（不变）
 ★1a. 按 memtier_restore 决定模式（见 4.2）
-     keep  → cp --reflink=always <snap>/memory/<snap>.memtier.raw <vm_dir>/memtier-backing.raw
+     keep  → cp --reflink=always <vm_dir>/snapshots/<snap>.memtier.raw <vm_dir>/memtier-backing.raw
              （先 unlink 旧活动后端，与磁盘回写同一段逻辑）
      merge → 不放回；helper 直接读快照目录里的副本
  2. 起 QEMU -S -incoming exec:snapshot-helper FILE 0 [--memtier=… …]
@@ -232,10 +240,10 @@ path 改写三种往返校验。
 
 ## 7. 控制面与编排
 
-- **快照计划**：增加 `memtier_backing_artifact_path`（`<snap>/memory/<snap>.memtier.raw`）；
+- **快照计划**：增加 `memtier_backing_artifact_path`（`<vm_dir>/snapshots/<snap>.memtier.raw`）；
   快照 JSON 记录 `memtier: {enabled, backing_artifact, pages}` 作为「此快照依赖分层文件」的
   权威来源（helper 的 flag 只是辅助）。DB 先按 `memory_file_path` 约定派生，后续再加列。
-- **空间估算**：`.state` 实际 ≈ 常驻量，后端副本初始 0、上限 = 后端大小；配额按上限预留。
+- **空间估算**：`.memory` 实际 ≈ 常驻量，后端副本初始 0、上限 = 后端大小；配额按上限预留。
 - **删除**：`snapshot_delete` 一并 unlink 后端副本。
 - **互斥与回退**：分层开启但后端不可 reflink → v1 回退「disable 再快照」并标明；或拒绝。
 - **hyper-agent 总控**：恢复后 region 已启用，总控下一拍即纳管，无需改动。
