@@ -115,7 +115,12 @@ uffd poll 循环：MISSING 缺页 → io_uring 读回 → UFFDIO_COPY 填回 →
 | `x-memtier-disable {*id}` | 先把所有换出页强制拉回 RAM，再拆除分层（迁移/快照前应先 disable 收敛） |
 
 `MemTierInfo` 字段：`total/resident/swapped-bytes`、`backing-total/used/largest-free-bytes`、
-`evicted-pages`、`evict-aborts`、`swapin-faults`、`swapin-errors`、`evict-mbps`、`psi-some-avg10`。
+`evicted-pages`、`evict-aborts`、`swapin-faults`、`swapin-errors`、`evict-mbps`、`psi-some-avg10`，
+换入延迟分解 `swapin-lat-samples / swapin-avg-{wait,device,publish}-ns / swapin-max-ns`，以及
+后端写入统计（NVMe 磨损研究，见 [`memtier-nvme-wear.md`](./memtier-nvme-wear.md)）：
+`evict-ios / evict-io-bytes / evict-io-hist`（写次数、字节、按 4K…1M+ 分桶的大小直方图）、
+`evict-zero-pages`（换出时全零的页）、`evict-reevict-pages`（换入后再次换出的页）、
+`evict-sampled-pages / evict-sampled-clean-pages`（每 32 个 gfn 抽样比对换入时 crc，估算再换出中内容未变的比例）。
 
 ### 3.1 策略预设
 
