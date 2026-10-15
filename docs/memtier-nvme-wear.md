@@ -5,7 +5,7 @@
 > （`evict-ios / evict-io-bytes / evict-io-hist / evict-zero-pages / evict-reevict-pages /
 > evict-sampled-pages / evict-sampled-clean-pages`，qemu 分支 `memtier-stats`）。
 >
-> 状态：统计项已实现（qemu `memtier-stats` 分支）；baseline 实测完成，见 §4（2026-10-15）。
+> 状态：统计项与零页不落盘已实现（qemu `memtier-stats` 分支）；baseline 与零页对比实测见 §4（2026-10-15）。
 
 ---
 
@@ -102,12 +102,36 @@ best-fit 分配把这些小写撒到被换入腾出的零散空洞里，FTL 看�
 
 脚本与原始数据：`/root/work/memtier-test/iopoll/wear-run.sh`，`results/wear-base/`。
 
+### 4.5 零页不落盘（方案 A-1）实测
+
+实现：qemu `memtier-stats` 分支 `60f6b39657`。换出 run 写保护后逐页 `buffer_is_zero`，
+全零页不写后端，和邻页一起 `MADV_DONTNEED` 后状态保持 RESIDENT、无 slot，等价于
+"从未填充"的页：冷扫描跳过非在场页，converge / 迁移把它当普通读为零的内存，客户机
+下次访问走已有的 `UFFDIO_ZEROPAGE` 路径。写范围裁剪到 run 内非零页的跨度；整段全零的
+run 不发 IO。没有新增页状态，memtier 段与快照格式不变。
+
+同一流程、同一客户机镜像重跑（233s，含重新预灌）：
+
+| 指标 | baseline | 零页不落盘 | 变化 |
+|---|---|---|---|
+| 换出页数 | 1,499,453 | 1,396,330 | 负载抖动 |
+| 后端写字节（QEMU = 块层 = NVMe） | 5.72 GiB | 4.95 GiB（换出页 5.33 GiB） | **写量比换出量少 7.0%** |
+| 零页 | 108,060（7.2%） | 105,290（7.5%，全部未写） | |
+| `zero-fills` | 无此字段 | 5,906 | 被省掉的页里 5.6% 又被访问，零填充免读盘 |
+| GET rps / p99 | 28.6k / 3.50ms | 28.6k / 3.62ms | 持平 |
+| SET rps / p99 | 34.1k / 3.14ms | 37.0k / 3.01ms | 持平 |
+| `swapin-errors` / `evict-aborts` | 0 / 1 | 0 / 0 | |
+
+零页 105,290 页 = 0.40 GiB，实际少写 0.38 GiB：裁剪只去掉 run 两端的零页，夹在中间的
+仍会写（随后丢弃），损失约 5%，与"run 很短"的预期一致。redis 灌满的客户机零页只有
+7.5%，收益即为 7%；普通客户机（空闲内存多、页回收后清零）零页比例高得多，收益随之放大。
+
 ## 5. 优化方案
 
 ### 方案 A：降写入量（P0）
 
-1. **零页不落盘**：换出时 `buffer_is_zero`，置 `SWAPPED_ZERO` 不占 slot，缺页用
-   `UFFDIO_ZEROPAGE` 填回。
+1. **零页不落盘**（已实现，见 §4.5）：换出时 `buffer_is_zero`，零页不写、不占 slot，
+   状态保持 RESIDENT 等价"从未填充"，缺页走已有的 `UFFDIO_ZEROPAGE` 路径。
 2. **swap-cache**：按 `memtier-swapcache-design.md` 实现 `RESIDENT_CLEAN`，换入后保留 slot
    并写保护，未改的页再换出零 IO。后端需 ≥ 客户机 RAM（现有预分配已满足）。
 3. **主机级写入预算**：hyper-agent 总控按盘 TBW 与目标寿命折算日预算，以
