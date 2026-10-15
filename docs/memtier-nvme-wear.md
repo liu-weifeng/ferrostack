@@ -5,7 +5,7 @@
 > （`evict-ios / evict-io-bytes / evict-io-hist / evict-zero-pages / evict-reevict-pages /
 > evict-sampled-pages / evict-sampled-clean-pages`，qemu 分支 `memtier-stats`）。
 >
-> 状态：统计项、零页不落盘、swap-cache 已实现（qemu `memtier-stats` 分支），对比实测见 §4，写量较 baseline 少 22%；主机级写入预算已在 hyper-agent 实现（单测，未真机验证）（2026-10-15）。
+> 状态：统计项、零页不落盘、swap-cache、分块循环日志加打洞均已实现（qemu `memtier-stats` 分支），对比实测见 §4：写量较 baseline 少 24%，98% 的写落在前一次写的紧后面；主机级写入预算已在 hyper-agent 实现（单测）（2026-10-15）。
 
 ---
 
@@ -163,6 +163,53 @@ run 不发 IO。没有新增页状态，memtier 段与快照格式不变。
 计算；干净页占用 slot，后端需 ≥ 客户机 RAM，满时按游标批量降级干净页释放 slot
 （`clean-slot-reclaims`）；SPDK 后端暂不走此路径。
 
+### 4.7 分块循环日志加打洞（方案 B）实测
+
+实现：qemu `memtier-stats` 分支 "memtier: chunked circular-log backing allocator"。
+`slot-alloc.c` 重写为 2MB chunk 的日志：打开一个 chunk 顺序 bump 分配，写满换下一个
+（空闲 FIFO，最早释放的先用）；释放只计数，chunk 内最后一个活 slot 释放时整块进死队列，
+由 worker 打洞（文件 `FALLOC_FL_PUNCH_HOLE`，分区 `BLKDISCARD`）后回空闲 FIFO。热路径
+不做 GC；空闲 chunk 只剩 `CHUNK_RESERVE`（2）+2 个时，或分配失败时，worker 压实活率最低的
+chunk：其中 swap-cache 副本直接丢弃（页在 RAM），SWAPPED 页以 `SWAPPED_MOVING` 占住、读出
+写进保留 chunk（缺页到达则驻留等待，搬完 `UFFDIO_WAKE` 重试）。slot 编号语义不变，快照、
+迁移、snapshot-helper 全部不受影响。
+
+**写入模式**（16GB 后端、redis 流程、与上一版本背靠背 A/B）：
+
+| 指标 | swap-cache 版（best-fit 分配） | 分块日志 |
+|---|---|---|
+| 后端写字节 | 4.43 GiB | **4.34 GiB** |
+| 写次数 | 359,640 | 353,897 |
+| 与前一次写 LBA 连续的写（`evict-io-seq`） | 无此统计 | **98.2%** |
+| 块层合并次数 | 约 6k | 约 23k |
+| GET rps / p99 | 30.1k / 3.32ms | 30.7k / 3.30ms |
+| SET rps / p99 | 45.4k / 2.09ms | **49.0k / 1.91ms** |
+
+单次写仍是 4K 到 32K，但 98% 落在前一次写的紧后面：FTL 看到的是顺序流，这正是方案 B
+要的效果，且性能不降反升。
+
+**压实压力测试**（1.5GB 后端、1GB 确定性数据、下限 300MB，后端 100% 占满）：日志持续滚动，
+压实 896 次、搬 276,738 页、打洞 896 次，换出持续进行，六轮校验全部通过，99.6% 顺序写。
+这个极端场景下主机侧写放大约 1.6（搬页量 / 换出量）；16GB 后端的正常运行中压实为 0。
+
+**打洞的两个发现**，决定了默认值：
+
+1. 文件后端打洞后，重新写入该 chunk 的每次写都要付 XFS 的 extent 分配或 unwritten 转换，
+   XFS 还会让它与同一文件上并发的 O_DIRECT 换入读串行化；实测打洞开启时 SET 吞吐 27k rps，
+   关闭 47k。打洞后立刻 `fallocate(KEEP_SIZE)` 预分配回来也一样慢（unwritten 转换）。
+   所以 **`backing-discard` 对文件后端默认关，对裸分区默认开**（`BLKDISCARD` 没有文件系统
+   开销）。对磨损敏感的部署应当用裸分区或 namespace 做后端。
+2. XFS 不挂 `-o discard` 时打洞不会向盘发 TRIM（本测试机就是），只有周期性 `fstrim` 能补；
+   而不打洞的文件 `fstrim` 也无能为力。文件后端要获得 TRIM 收益只能开打洞并接受上述代价。
+
+另一个过程中的教训：前几轮测得分块日志 SET 只有 27k，追了打洞、unwritten、文件碎片
+（19,804 个 extent）三个方向都不是，最后背靠背 A/B 证明是机器状态的波动，新旧版本在同一
+时段测分别是 45.4k 与 49.0k。单次测量的 SET 吞吐波动可到 40%，结论必须用背靠背 A/B 下。
+
+**修过的两个 bug**：后端满时 `memtier_evict_run` 直接 `return` 跳过了本轮已排队 IO 的
+`io_uring_submit`，drain 永远等不到完成（旧代码就有，16GB 后端从不触发）；压实需要空闲
+空间才能搬页，没有保留区时后端一满压实就空转，引入 `CHUNK_RESERVE`。
+
 ## 5. 优化方案
 
 ### 方案 A：降写入量（P0）
@@ -183,7 +230,7 @@ run 不发 IO。没有新增页状态，memtier 段与快照格式不变。
    `write_budget` 字段（每盘预算、当天已用、写速率、允许速率、nvme smart 寿命百分比），
    每 VM 多 `backing_device / budget_cap_mbps / budget_overridden`。未真机验证。
 
-### 方案 B：分块循环日志加打洞（P1）
+### 方案 B：分块循环日志加打洞（P1）— 已实现，见 §4.7
 
 - 后端按 2MB chunk（对齐冷扫描 cell）顺序推进分配，写满换下一块，尾部回绕。
 - 每 chunk 活页计数，`slot_free` 递减，归零整块打洞 / TRIM（文件 `FALLOC_FL_PUNCH_HOLE`，

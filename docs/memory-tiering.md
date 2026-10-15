@@ -124,6 +124,9 @@ uffd poll 循环：MISSING 缺页 → io_uring 读回 → UFFDIO_COPY 填回 →
 swap-cache：`clean-resident-bytes`（驻留且仍持有 slot 的页）、`evict-clean-pages`（免写的再换出）、
 `evict-verify-reads`、`clean-slot-reclaims`；诊断：`wp-faults-evicting / wp-faults-other`。
 旋钮 `swapcache-verify`（默认关）让哈希相等的页再读回逐字节比对。
+后端日志：`evict-io-seq`（与前一次写 LBA 连续的写）、`backing-chunk-bytes / chunks / free-chunks /
+dead-chunks / discards / compactions / compact-moved-pages`；旋钮 `backing-discard`（裸分区默认开、
+文件默认关，见 `memtier-nvme-wear.md` §4.7）。
 
 ### 3.1 策略预设
 
@@ -253,8 +256,10 @@ GET /api/vcenter/vm/{vm}/memtier
   QEMU 以 root 跑，满足。
 - **内核**：Linux 6.x（匿名内存 uffd-wp，`UFFD_FEATURE_PAGEFAULT_FLAG_WP`）；构建需
   `liburing`（`--enable-linux-io-uring`）。
-- **后端容量**：后端文件/设备需容纳预期换出量（自动预分配 = 全 RAM 大小）。后端满会发
-  `MEMTIER_BACKING_FULL` 事件并暂停换出（无正确性影响）。
+- **后端容量**：后端文件/设备需容纳预期换出量（自动预分配 = 全 RAM 大小；swap-cache 让换入
+  过的页继续占 slot，故后端 ≥ RAM 才不触发降级）。后端按 2MB chunk 顺序日志分配，满时先压实
+  再报 `MEMTIER_BACKING_FULL` 并暂停换出（无正确性影响）。磨损敏感的部署建议用裸分区做后端
+  （`BLKDISCARD` 无文件系统开销，默认开启打洞）。
 - **迁移/快照**：在线迁移前应 `x-memtier-disable` 先收敛（共享后备除外）。内存快照改为只导出常驻页 + 分层文件副本，恢复时可继续分层或全部导入，设计见 [`memtier-snapshot-design.md`](./memtier-snapshot-design.md)。
 - **大页未支持**：目标 region 被强制 4K（`MADV_NOHUGEPAGE`）。
 
