@@ -172,6 +172,11 @@ PSI 抢着换。每 5s 一拍：
 环境变量调阈值：`XVIRT_MEMTIER_INTERVAL`(默认 5s) / `XVIRT_MEMTIER_PSI_HIGH`(10) /
 `XVIRT_MEMTIER_FREE_LOW_PCT`(10) / `XVIRT_MEMTIER_FREE_HIGH_PCT`(50)。
 
+**NVMe 写入预算**（`support/memtier/write_budget.py`，详见 [`memtier-nvme-wear.md`](./memtier-nvme-wear.md) §5）：
+按后端盘记当天分层写入量，把「剩余预算 / 剩余时间」按优先级分给同盘 VM 作 `max-evict-mbps`
+上限，主机压力 ≥ 0.9 时越过。配置 plan `memory_tiering.write_budget_gb_per_day` 或
+`XVIRT_MEMTIER_WRITE_BUDGET_GB_PER_DAY`，0 = 不限。
+
 ### 为什么放 hyper-agent 而**不放 concilium**
 
 分层是**纯主机本地**的事（受本机 RAM + 本机后端盘 + 本机 QEMU 约束，没有任何跨主机

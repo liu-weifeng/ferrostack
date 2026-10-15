@@ -684,7 +684,8 @@ VM 转 C 允许跨节点；一台 12G 的 B 级 VM 因 N0 内存吃紧被搬到 
               "vm_budget_mb": 214016, "headroom_pct": 4 },
   "hugepages": { "node0": { "2m": 8192, "1g": 16 }, "node1": { "2m": 8192, "1g": 16 },
                  "spdk_quota": { "2m": 2048, "1g": 4 } },
-  "memory_tiering": { "evict_watermark_pct": 10, "swapback_watermark_pct": 50, "psi_high": 10 },
+  "memory_tiering": { "evict_watermark_pct": 10, "swapback_watermark_pct": 50, "psi_high": 10,
+                      "write_budget_gb_per_day": 0 },   // 后端盘每日分层写入预算，0 = 不限（memtier-nvme-wear.md §5）
   "auto_placement": { "enabled": true, "mode": "apply",            // apply | advise
       "dedicate_max_oc": 1.0, "release_oc": 1.5, "bind_max_oc": 2.0,
       "min_shared_threads": 4, "numa_imbalance_pct": 25, "psi_cpu_high": 20,

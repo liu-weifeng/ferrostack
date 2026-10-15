@@ -5,7 +5,7 @@
 > （`evict-ios / evict-io-bytes / evict-io-hist / evict-zero-pages / evict-reevict-pages /
 > evict-sampled-pages / evict-sampled-clean-pages`，qemu 分支 `memtier-stats`）。
 >
-> 状态：统计项、零页不落盘、swap-cache 已实现（qemu `memtier-stats` 分支）；对比实测见 §4，写量较 baseline 少 22%（2026-10-15）。
+> 状态：统计项、零页不落盘、swap-cache 已实现（qemu `memtier-stats` 分支），对比实测见 §4，写量较 baseline 少 22%；主机级写入预算已在 hyper-agent 实现（单测，未真机验证）（2026-10-15）。
 
 ---
 
@@ -171,8 +171,17 @@ run 不发 IO。没有新增页状态，memtier 段与快照格式不变。
    状态保持 RESIDENT 等价"从未填充"，缺页走已有的 `UFFDIO_ZEROPAGE` 路径。
 2. **swap-cache**（已实现，见 §4.6）：换入后保留 slot，记 128 位哈希，再换出时哈希未变则
    零 IO。写保护在 KVM 下不可用（读也会打掉），读回比对又太慢，故用哈希。后端需 ≥ 客户机 RAM。
-3. **主机级写入预算**：hyper-agent 总控按盘 TBW 与目标寿命折算日预算，以
-   `data_units_written` 闭环压 `max-evict-mbps`。纯编排改动。
+3. **主机级写入预算**（已实现）：hyper-agent 总控 `support/memtier/write_budget.py`。
+   按后端**盘**记账（文件按所在设备、分区折到整盘、dm/ublk 就是自己），用
+   `/sys/block/<dev>/stat` 的累计写扇区数，不依赖 nvme-cli，同盘其它写入者也算在内；
+   当天起点与日期持久化在 `/var/lib/xvirt/memtier-write-budget.json`。每拍
+   允许速率 = 当天剩余预算 / 当天剩余秒数（下限 `XVIRT_MEMTIER_BUDGET_MIN_MBPS`=8），
+   按优先级权重（256:512:1024）分给同盘 VM 作 `max-evict-mbps` 上限；主机压力 ≥ 0.9 时越过
+   预算（宁可磨损不 OOM）。配置：plan `memory_tiering.write_budget_gb_per_day`（优先）或
+   环境变量 `XVIRT_MEMTIER_WRITE_BUDGET_GB_PER_DAY`，0 = 不限；可用
+   `budget_bytes_per_day(tbw_tb, life_years)` 从 TBW 折算。`tiering_host_status` 多
+   `write_budget` 字段（每盘预算、当天已用、写速率、允许速率、nvme smart 寿命百分比），
+   每 VM 多 `backing_device / budget_cap_mbps / budget_overridden`。未真机验证。
 
 ### 方案 B：分块循环日志加打洞（P1）
 
