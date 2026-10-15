@@ -12,7 +12,7 @@
 > [`../qemu-memory-tiering-tech-design.md`](../qemu-memory-tiering-tech-design.md) §12（共享后备热迁移）、
 > `../snapshot-helper/src/README.md`（快照文件格式）、`../virt-control/docs/snapshot.md`（快照总体流程）。
 >
-> 状态：设计稿（2026-10-15）。进度：§6.1 QEMU 两处必改已提交到 qemu `stable-11.1-dev`（待编译与真机验证）；§3 创建流程与 §4 恢复的 keep 路径（场景 A）已在 lictor / hyper-agent 落地（28 个单测，真机未验）；§5 snapshot-helper 三种模式（keep / keep+改路径 / merge）与 `--info` 已实现并通过 selftest；lictor 侧 `memtier_restore=merge` 尚未接到 helper 参数；§7 控制面未动。
+> 状态：设计稿（2026-10-15）。进度：§6.1 QEMU 两处必改已提交到 qemu `stable-11.1-dev`（待编译与真机验证）；§3 创建流程与 §4 恢复的 keep 路径（场景 A）已在 lictor / hyper-agent 落地（28 个单测，真机未验）；§5 snapshot-helper 三种模式（keep / keep+改路径 / merge）与 `--info` 已实现并通过 selftest；lictor 侧 `memtier_restore=auto|keep|merge` 已接通 helper（40 个单测）；§7 控制面未动。
 
 ---
 
@@ -149,11 +149,13 @@ B 的零改动兜底：先按 A 恢复再 `x-memtier-disable` 强制收敛。只
 在 `launch_vm` 之前 unlink 旧活动后端 → reflink 到 tmp → rename。`launch_vm` 的 `-incoming`
 分支补上了 `_memtier_enable_on_start` 调用（原来只在普通启动调），该函数改为幂等：
 `x-memtier-query` 已有启用 region 就只 `x-memtier-set-policy` 回放 sidecar，否则照旧 enable。
-结果多一个 `memtier_restored` 字段。`memtier_restore=merge` 目前明确报错。
+结果多 `memtier_mode` / `memtier_restored` 两个字段。merge 时不放回后端，改给 helper 传
+`--memtier=merge --memtier-backing=<副本>`（pipe 与 exec 两种 incoming 模式都支持，exec 模式对
+参数做 shell 元字符检查）；多 region 多副本的快照只能 keep（helper 只收一个副本）。
 
-### 4.2 模式选择
+### 4.2 模式选择 — 已实现
 
-revert 参数新增 `memtier_restore = auto | keep | merge`，默认 `auto`（目前 auto 等价 keep）：
+revert 参数新增 `memtier_restore = auto | keep | merge`，默认 `auto`：
 
 ```
 目标 QEMU 带 memtier？ ──否──▶ 宿主空闲内存 ≥ RAM？ ──是──▶ merge
@@ -163,6 +165,12 @@ revert 参数新增 `memtier_restore = auto | keep | merge`，默认 `auto`（�
         └──否──▶ 路径可改写？ ──是──▶ keep + --memtier-path（C）
                       └──否──▶ 同上「空闲内存」分支 → merge / 拒绝
 ```
+
+实现（`_memtier_choose_mode`）：目标 QEMU 是否带 memtier 用二进制里是否含 `memtier-worker`
+线程名判断（stubs 构建也链接了 `x-memtier-*` 命令名，不能看命令名）；客户机 RAM 从
+`snapshot-helper --info` 的 `total_ram_bytes` 取，与 `/proc/meminfo` 的 MemAvailable 比较。
+显式 `keep` 遇到不带 memtier 的 QEMU 直接报错（加载 memtier 段必败）；显式 `merge` 内存紧张只告警。
+C 场景（改路径）helper 已支持 `--memtier-path`，lictor 暂未暴露（当前恢复总是放回 sidecar 路径）。
 
 API 层要标明两种模式的资源差异：A 恢复时宿主只需常驻量，B 需要全量 RAM，超分主机上贸然选
 merge 会把宿主打爆。
