@@ -242,7 +242,7 @@ GET /api/vcenter/vm/{vm}/memtier
   `liburing`（`--enable-linux-io-uring`）。
 - **后端容量**：后端文件/设备需容纳预期换出量（自动预分配 = 全 RAM 大小）。后端满会发
   `MEMTIER_BACKING_FULL` 事件并暂停换出（无正确性影响）。
-- **迁移/快照**：在线迁移、内存快照前应 `x-memtier-disable` 先收敛。
+- **迁移/快照**：在线迁移前应 `x-memtier-disable` 先收敛（共享后备除外）。内存快照改为只导出常驻页 + 分层文件副本，恢复时可继续分层或全部导入，设计见 [`memtier-snapshot-design.md`](./memtier-snapshot-design.md)。
 - **大页未支持**：目标 region 被强制 4K（`MADV_NOHUGEPAGE`）。
 
 ---
@@ -314,6 +314,7 @@ GET /api/vcenter/vm/{vm}/memtier
   更细的中心化逐页配额（模型 B）未做。
 - 后端容量/带宽未纳入放置调度（cluster scheduler 暂不感知分层余量）。
 - concilium 迁移前 `disable` 触点待随 migrate RA 落地。
+- 内存快照与分层的整合（只导出常驻页、快照带分层文件、恢复多场景）为设计稿，见 [`memtier-snapshot-design.md`](./memtier-snapshot-design.md)。
 - DAMON 作为粗粒度 oracle（cell_heat）未接；当前总控用 page_idle 细扫 + 主机 PSI。
 - 主机内存预算/阈值尚未在 ferrovirt/UI 暴露（目前是 hyper-agent 常量 + 环境变量）。
 - 前端向导暂未暴露**优先级**下拉（可经 API `memtier.priority` 设置；缺省按 policy 回退）。
