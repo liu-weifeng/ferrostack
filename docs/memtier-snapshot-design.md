@@ -12,7 +12,7 @@
 > [`../qemu-memory-tiering-tech-design.md`](../qemu-memory-tiering-tech-design.md) §12（共享后备热迁移）、
 > `../snapshot-helper/src/README.md`（快照文件格式）、`../virt-control/docs/snapshot.md`（快照总体流程）。
 >
-> 状态：设计稿（2026-10-15）。进度：§6.1 QEMU 两处必改已提交到 qemu `stable-11.1-dev`（待编译与真机验证）；§3 创建流程与 §4 恢复的 keep 路径（场景 A）已在 lictor / hyper-agent 落地（28 个单测，真机未验）；§5 snapshot-helper 三种模式（keep / keep+改路径 / merge）与 `--info` 已实现并通过 selftest；lictor 侧 `memtier_restore=auto|keep|merge` 已接通 helper（40 个单测）；§7 控制面未动。
+> 状态：设计稿（2026-10-15）。进度：§6.1 QEMU 两处必改已提交到 qemu `stable-11.1-dev`（待编译与真机验证）；§3 创建流程与 §4 恢复的 keep 路径（场景 A）已在 lictor / hyper-agent 落地（28 个单测，真机未验）；§5 snapshot-helper 三种模式（keep / keep+改路径 / merge）与 `--info` 已实现并通过 selftest；lictor 侧 `memtier_restore=auto|keep|merge` 已接通 helper（40 个单测）；§7 控制面已落库与回传（ferrovirt + schema），空间估算未做。
 
 ---
 
@@ -260,11 +260,16 @@ path 改写三种往返校验。
 
 ---
 
-## 7. 控制面与编排
+## 7. 控制面与编排 — 已实现（空间估算除外）
 
-- **快照计划**：增加 `memtier_backing_artifact_path`（`<vm_dir>/snapshots/<snap>.memtier.raw`）；
-  快照 JSON 记录 `memtier: {enabled, backing_artifact, pages}` 作为「此快照依赖分层文件」的
-  权威来源（helper 的 flag 只是辅助）。DB 先按 `memory_file_path` 约定派生，后续再加列。
+- **落库**：`vm_snapshot` 新增 `memtier_mode`（tiered / converged / NULL）与 `memtier_artifacts`
+  （JSON，agent create 结果里的 `memtier.regions` 原样），ferrovirt `mark_active` 写入。
+  老库 `ALTER TABLE vm_snapshot ADD COLUMN memtier_mode varchar(16), ADD COLUMN memtier_artifacts longtext`。
+- **revert**：ferrovirt 把 regions 映射成 `memtier_artifacts` 回传 agent，并透传 REST query
+  `memtierRestore=auto|keep|merge`；没有副本却显式指定 keep/merge 直接拒绝。
+- **delete**：回传 `memtier_artifact_paths`，agent 另按命名约定兜底。
+- **API**：list 多 `memtier_mode`，get 多 `memtier:{mode, regions}`；文档见
+  `virt-control/docs/snapshot.md` §6.3。
 - **空间估算**：`.memory` 实际 ≈ 常驻量，后端副本初始 0、上限 = 后端大小；配额按上限预留。
 - **删除**：`snapshot_delete` 一并 unlink 后端副本。
 - **互斥与回退**：分层开启但后端不可 reflink → v1 回退「disable 再快照」并标明；或拒绝。
