@@ -5,7 +5,7 @@
 > （`evict-ios / evict-io-bytes / evict-io-hist / evict-zero-pages / evict-reevict-pages /
 > evict-sampled-pages / evict-sampled-clean-pages`，qemu 分支 `memtier-stats`）。
 >
-> 状态：统计项已实现并在 10.8.1.195 上编译通过；首轮实测进行中（2026-10-15）。
+> 状态：统计项已实现（qemu `memtier-stats` 分支）；baseline 实测完成，见 §4（2026-10-15）。
 
 ---
 
@@ -46,9 +46,61 @@
 包一层 `run-redis.sh`（8 vCPU / 8GB 客户机，redis 预灌约 4GB，驻留下限 4096MB，
 200 万次均匀随机 GET + 100 万次 SET），前后抓三路计数并打印汇总。
 
-## 4. 实测
+## 4. 实测：baseline（2026-10-15，10.8.1.195）
 
-（首轮 baseline 结果待填）
+条件：Xeon Gold 6240，Great Wall GW3500 256GB 消费级 NVMe + XFS，后端 `backing.img` 16GB
+O_DIRECT；客户机 8 vCPU / 8GB，redis 预灌 4.9GB（384 万键 × 1KB）；`aggressive`，
+`psi-trigger=0`，驻留下限 4096MB，`max-evict-mbps=4000`，`cooldown-ms=200`；默认 io_uring
+路径（未开 io-poll）。流程：enable → 20s 内下刷到 4095MB → 200 万次均匀随机 GET → 100 万次
+SET → disable。全程 169s。
+
+### 4.1 三路计数对照
+
+| 来源 | 写次数 | 写字节 | 平均每次 |
+|---|---|---|---|
+| QEMU `evict-ios / evict-io-bytes` | 487,897 | 5.72 GiB | 12.3 KiB |
+| 块层 `/sys/block/nvme0n1/stat` | 485,399（合并 5,051） | 5.73 GiB | 12.4 KiB |
+| NVMe `host_write_commands / data_units_written` | 485,399 | 5.73 GiB | 12.4 KiB |
+
+三路一致到 1%：XFS 上 O_DIRECT 没有额外元数据写，块层几乎不合并，QEMU 发出什么设备就
+收到什么。换出 1,499,453 页（5.72 GiB），平均写入速率 35MB/s，下刷阶段峰值约 200MB/s。
+
+### 4.2 写大小分布（`evict-io-hist`）
+
+| 大小 | 次数 | 占写次数 | 占字节 |
+|---|---|---|---|
+| 4K | 231,628 | 47% | 15% |
+| 8K | 119,131 | 24% | 16% |
+| 16K | 32,396 | 7% | 9% |
+| 32K | 104,742 | 21% | 56% |
+
+近一半的写命令是单页 4K，四分之三不超过 8K。`EVICT_MAX_RUN=8` 把上限钉在 32K，而冷页
+在客户机地址空间里本来就是碎的（热页夹在中间），连续冷段往往只有一两页；再叠加
+best-fit 分配把这些小写撒到被换入腾出的零散空洞里，FTL 看到的是典型的随机小写。
+
+### 4.3 可避免的写（方案 A 的收益）
+
+| 项 | 数值 | 含义 |
+|---|---|---|
+| `evict-zero-pages` | 108,060（7.2%） | redis 灌满的客户机仍有 7% 零页；一般客户机会高得多 |
+| `evict-reevict-pages` | 135,524（9.0%） | 换入后又被换出的页 |
+| `evict-sampled-clean-pages / sampled` | 4,237 / 4,274（**99.1%**） | 再换出的页几乎全部未被修改 |
+
+即 swap-cache 能在这个负载下省掉约 9% 的写，零页省略再省 7%，合计约 16%。GET 为主的
+负载里再换出比例不高；换入换出来回更频繁的负载（工作集略大于驻留下限、抖动）这个比例
+会显著上升，而 99% 的"未修改"说明只要页回来过，几乎都值得留 slot。
+
+### 4.4 结论
+
+1. **写量本身不大但很碎**：35MB/s 平均、12KB 平均一次，半数是 4K 随机写。这是消费盘
+   WAF 最差的形态，寿命问题主要来自 WAF 而不是写量。这块盘不暴露 NAND 写入量，WAF
+   无法直接测；需要企业盘（厂商日志页）才能给出实数。
+2. **方案 B（分块顺序日志）正对症**：它不改变单次 IO 大小，但把这 48 万次小写变成 LBA
+   连续的流，FTL 能整块回收。
+3. **方案 A 在此负载省约 16%**，在抖动负载下更多；零页省略对普通客户机收益更大。
+4. 现有换出路径没有任何文件系统放大，分块日志不会引入新的放大源。
+
+脚本与原始数据：`/root/work/memtier-test/iopoll/wear-run.sh`，`results/wear-base/`。
 
 ## 5. 优化方案
 
