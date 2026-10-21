@@ -124,7 +124,7 @@ uffd poll 循环：MISSING 缺页 → io_uring 读回 → UFFDIO_COPY 填回 →
 swap-cache：`clean-resident-bytes`（驻留且仍持有 slot 的页）、`evict-clean-pages`（免写的再换出）、
 `evict-verify-reads`、`clean-slot-reclaims`；诊断：`wp-faults-evicting / wp-faults-other`。
 旋钮 `swapcache-verify`（默认关）让哈希相等的页再读回逐字节比对。
-后端日志：`evict-io-seq`（与前一次写 LBA 连续的写）、`backing-chunk-bytes / chunks / free-chunks /
+后端日志：`evict-io-seq`（与前一次写 LBA 紧连的写）、`evict-io-fwd`（前进且在一个 chunk 内：日志序，含小洞）、`backing-chunk-bytes / chunks / free-chunks /
 dead-chunks / discards / compactions / compact-moved-pages`；旋钮 `backing-discard`（裸分区默认开、
 文件默认关，见 `memtier-nvme-wear.md` §4.7）。
 
