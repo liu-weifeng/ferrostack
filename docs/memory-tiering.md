@@ -114,7 +114,7 @@ uffd poll 循环：MISSING 缺页 → io_uring 读回 → UFFDIO_COPY 填回 →
 | `x-memtier-set-policy {*id, *policy, *tunables}` | 运行中动态改策略/旋钮（总控用） |
 | `x-memtier-disable {*id}` | 先把所有换出页强制拉回 RAM，再拆除分层（迁移/快照前应先 disable 收敛） |
 
-`MemTierInfo` 字段：`total/resident/swapped-bytes`、`backing-total/used/largest-free-bytes`、
+`MemTierInfo` 字段：`total/resident/swapped-bytes`、`resident-cold-bytes`（判冷未换出的常驻页）与 `scan-age-ms`、`backing-total/used/largest-free-bytes`、
 `evicted-pages`、`evict-aborts`、`swapin-faults`、`swapin-errors`、`evict-mbps`、`psi-some-avg10`，
 换入延迟分解 `swapin-lat-samples / swapin-avg-{wait,device,publish}-ns / swapin-max-ns`，以及
 后端写入统计（NVMe 磨损研究，见 [`memtier-nvme-wear.md`](./memtier-nvme-wear.md)）：

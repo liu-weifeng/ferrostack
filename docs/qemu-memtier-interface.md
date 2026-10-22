@@ -1,6 +1,6 @@
 # QEMU 内存分层（memtier）接口参考：配置接口与查询接口
 
-> 面向**上层功能与监控设计**的接口规格。以 qemu `memtier-stats` 分支（HEAD `17fa8e0482`，
+> 面向**上层功能与监控设计**的接口规格。以 qemu `memtier-stats` 分支（`17fa8e0482` 加 `resident-cold-bytes` 提交，
 > 11.1 血统）的 `qapi/memtier.json` 与 `memtier/*.c` 为准，每个字段都对照了实现。
 > 机制与调参背景见 [`qemu-memtier-usage.md`](./qemu-memtier-usage.md)，xvirt 编排见
 > [`memory-tiering.md`](./memory-tiering.md)。
@@ -266,6 +266,8 @@ PSI 是**宿主级**信号（`/proc/pressure/memory`），所有 VM 看到同一
 | `resident-bytes` | 在宿主 RAM 的页（含 `RESIDENT_CLEAN`，不含从未映射过的页） | resident + swapped ≤ total，差值 = 从未映射或零页消除过的页 |
 | `swapped-bytes` | 只在后端的页 | 下刷比例 = swapped / total |
 | `clean-resident-bytes` | 在 RAM 且仍持有后端 slot 的页（swap-cache） | ≤ resident |
+| `resident-cold-bytes` | 常驻页中已被 idle 扫描连续 `idle-streak` 轮判冷、尚未换出的页（换出被 PSI / 下限 / 限速挡住，或还没轮到） | ≤ resident；热集 = resident − 此值。写老化回退模式下恒 0；query 时遍历页元数据得到，每 10GB 几毫秒 |
+| `scan-age-ms` | 距上一次 idle 扫描的毫秒数（从未扫描则从 enable 起算） | 扫描只在允许换出时进行，宿主空闲时此值持续增长，`resident-cold-bytes` 随之变陈旧 |
 
 #### 后端空间（gauge）
 
@@ -338,6 +340,7 @@ PSI 是**宿主级**信号（`/proc/pressure/memory`），所有 VM 看到同一
 | 指标 | 公式 | 用途 |
 |---|---|---|
 | 下刷比例 | `swapped / total` | 分层效果 |
+| 热度分段 | 热 = `resident − resident-cold`，冷未换出 = `resident-cold`，冷已换出 = `swapped`，未使用 = `total − resident − swapped` | 界面热度条；`scan-age-ms` 超过采样周期数倍时标记为陈旧 |
 | 换出速率 | `Δevicted-pages × 4K / T` 或直接 `evict-mbps` | 总控限速是否生效 |
 | 缺页换入速率 | `Δswapin-faults / T` | 客户机受影响程度 |
 | 抖动率 | `Δevict-reevict-pages / Δevicted-pages` | 高则调大 cold-runs / idle-streak / cooldown |
@@ -430,7 +433,7 @@ snapshot-helper 能定位、重写路径或把它剪掉并合并换出页；见
                   "fault-shards": 4, "swapcache-verify": false, "backing-discard": true,
                   "io-poll": false, "busy-poll": false },
     "total-bytes": 8589934592, "resident-bytes": 2415919104, "swapped-bytes": 5905580032,
-    "clean-resident-bytes": 268435456,
+    "resident-cold-bytes": 134217728, "scan-age-ms": 180, "clean-resident-bytes": 268435456,
     "backing-total-bytes": 8589934592, "backing-used-bytes": 6442450944,
     "backing-largest-free-bytes": 2097152, "backing-chunk-bytes": 2097152,
     "backing-chunks": 4096, "backing-free-chunks": 1024, "backing-dead-chunks": 3,

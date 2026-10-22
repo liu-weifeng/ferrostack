@@ -52,6 +52,8 @@ exporter 被 scrape 的周期建议与采样一致（5s）；平台存 5s 原始
 | `xvirt_vm_tiering_resident_bytes` | G | `resident-bytes` | 已有 |
 | `xvirt_vm_tiering_swapped_bytes` | G | `swapped-bytes` | 已有；下刷比例分子 |
 | `xvirt_vm_tiering_clean_resident_bytes` | G | `clean-resident-bytes` | swap-cache 占比 |
+| `xvirt_vm_tiering_resident_cold_bytes` | G | `resident-cold-bytes` | 热度条的「冷未换出」段；热 = resident − 此值 |
+| `xvirt_vm_tiering_scan_age_seconds` | G | `scan-age-ms / 1000` | 热度数据新鲜度；超过 60s 界面标灰 |
 | `xvirt_vm_tiering_backing_total_bytes` | G | `backing-total-bytes` | 已有 |
 | `xvirt_vm_tiering_backing_used_bytes` | G | `backing-used-bytes` | 已有 |
 | `xvirt_vm_tiering_backing_free_chunks` | G | `backing-free-chunks` | 容量告警的真实依据（≤4 开始压实，0 停换出） |
@@ -170,6 +172,7 @@ exporter 被 scrape 的周期建议与采样一致（5s）；平台存 5s 原始
 
 **VM 面板**（一台 VM）
 - 水位：total / resident / swapped / clean-resident 堆叠，叠 `min-resident-mb` 与 `target-resident-mb` 参考线，事件标注（set-policy、恢复）。
+- 热度条：热（resident − resident-cold）/ 冷未换出（resident-cold）/ 冷已换出（swapped）/ 未使用 四段；`scan_age_seconds` 大时标灰。
 - 流量：换出 B/s（叠 `max-evict-mbps` 参考线）、缺页换入 /s、主动换回 /s、零填 /s。
 - 延迟：三段近期平均叠加 + `swapin_max_ns`。
 - 质量：抖动率、免写比例、后端写放大、evict-aborts 速率。
