@@ -32,8 +32,8 @@ ferrostack 自己跟踪的内容：
 | `cdp-worker` | 已并入 `cdp` | → `cdp/recorder/`（原 `worker/`，现 `cdp-recorder`，保留 `cdpwork` 软链接）；`docs/io-redirection.md` → `cdp/docs/qemu-cdp.md`。**2026-11-11 已从本工作区移除**（连同 `cdp-worker.tar.gz`）；历史在 GitHub `liu-weifeng/cdp-worker`（已归档，含本地最后提交 `624a01f`） |
 | `xbackup-tools` | 已并入 `cdp` | → `cdp/tools/xbackup/`（本工作区无此目录） |
 | `xvirt-libs` | 疑似已被 `cdp/common` 吸收 | `cdp/common/` 含同名 bitmap/xxhash 源（内容已分叉，未逐行核对）；**2026-11-11 已从本工作区移除**；完整历史在 GitHub `free-backup/xvirt-libs`（`main` = `59ee30c`，与本地删除前一致）。注意 `liu-weifeng/xvirt-libs` 是另一个已归档的空模板，不含这些代码。停在 2026-01 |
-| `virt-control` | 废弃 | 被 `ferrovirt` 取代，不再启动，仅作历史参考 |
-| `krait` | 旧方案 | 旧 Rocky/Anaconda 向导，新装机走 `lycan` + `fledge` |
+| `virt-control` | 废弃 | 被 `ferrovirt` 取代。**2026-11-11 已从本工作区移除**；历史在 GitHub `liu-weifeng/virt-control`（内容与删除前的旧内网 `origin/main` 一致；本地另有一个未推送的文档提交 `53aff34` 已放弃） |
+| `krait` | 旧方案 | 旧 Rocky/Anaconda 向导，新装机走 `lycan` + `fledge`。2026-11-11 已迁到 kairos（`main` = `6d8822c`），本地只保留 `kairos` remote |
 | `xdesk-client` | 从 qemu/xvirt 抽出 | 2026-07-19 独立成仓 |
 | `qemu-patches/`、`qemu-patches.tar.gz`、`resource-planning.tar.gz` | 2026-11-11 已删除 | 前两个是基于 QEMU v10.0.7 的旧补丁导出（未入库，无其他副本）；后一个是 `docs/`、`demo/` 对应文件的旧打包，仍可从本仓历史取回 |
 
@@ -48,7 +48,7 @@ git@kairos.xve-vt.com:local/<repo>.git        # remote 名 kairos
 说明：
 
 - 本地各仓库只保留 `kairos` remote（`qemu` 另有 `upstream` 指向 QEMU 官方上游）；旧内网 `ssh://git@192.168.60.105:2222/liuwfng/<repo>.git` 与 GitHub `liu-weifeng/<repo>` 不再配置。
-- legacy 仓库（`krait`、`virt-control`）未迁到 kairos，仍保留旧内网 `origin`（2026-11-11 核对：这两个仓库的本地提交 GitHub 上没有或不全，本地是唯一完整副本，勿删；`cdp-worker` 已移除，见上表）；`spdk-analysis` 的 `origin` 为上游 SPDK。
+- legacy 仓库：`krait` 已于 2026-11-11 迁到 kairos；`cdp-worker`、`xvirt-libs`、`virt-control` 已从工作区移除（去向见上表）；`spdk-analysis` 的 `origin` 为上游 SPDK。
 - 各表中的「当前路径 / 分支 / 当前 HEAD」仍是 2026-07 旧工作区的历史记录，以工作区实际状态为准。
 
 ## 2. 核心平台仓库
@@ -88,14 +88,14 @@ git@kairos.xve-vt.com:local/<repo>.git        # remote 名 kairos
 | xvirt-autotest | `/root/code/xvirt/xvirt-autotest` | main | `14910a4` | Python stdlib 自动化测试框架：PXE、center、storage、network、VM、hotplug | `git@kairos.xve-vt.com:local/xvirt-autotest.git` |
 | fledge | `/root/code/xvirt/fledge` | main | `6ed351c` | PXE provisioning 服务，按 MAC/角色/磁盘自动装机 | `git@kairos.xve-vt.com:local/fledge.git` |
 | lycan | `/root/code/xvirt/lycan` | master | `947749a` | Ubuntu 26.04 autoinstall ISO 构建器，standalone/management 自动应答 | `git@kairos.xve-vt.com:local/lycan.git` |
-| krait | `/root/code/xvirt/krait` | main | `6d8822c` | **[legacy]** 旧 Rocky/Anaconda 安装向导 UI 与 ISO 集成，已被 lycan + fledge 取代 | 未迁移（仅旧内网 origin） |
+| krait | `/root/code/xvirt/krait` | main | `6d8822c` | **[legacy]** 旧 Rocky/Anaconda 安装向导 UI 与 ISO 集成，已被 lycan + fledge 取代 | `git@kairos.xve-vt.com:local/krait.git` |
 
 ## 5. Guest、旧控制面与历史仓库
 
 | 仓库 | 当前路径 | 分支 | 当前 HEAD | 职责/状态 | kairos 地址 |
 |---|---|---:|---:|---|---|---|
 | xvirt-tools | `/root/code/xvirt/xvirt-tools` | main | `787b231` | Go guest tools，安装在 VM 内，通过 virtio-serial `xvirt-tools.0` 与 host 通信 | `git@kairos.xve-vt.com:local/xvirt-tools.git` |
-| virt-control | `/root/code/xvirt/virt-control` | main | `6bc631a` | **[废弃]** Java/Spring 旧控制面，已被 ferrovirt 替代；保留作历史参考，不再启动 | 未迁移（仅旧内网 origin） |
+| virt-control | `/root/code/xvirt/virt-control` | main | `6bc631a` | **[废弃，2026-11-11 已从工作区移除，历史见 GitHub `liu-weifeng/virt-control`]** Java/Spring 旧控制面，已被 ferrovirt 替代；保留作历史参考，不再启动 | GitHub `liu-weifeng/virt-control` |
 
 ## 5.1 2026-07 之后新增的目录
 
@@ -141,7 +141,7 @@ git@kairos.xve-vt.com:local/<repo>.git        # remote 名 kairos
 
 ### 6.4 历史/参考
 
-- `virt-control`：旧 Java 控制面，已废弃。
+- `virt-control`：旧 Java 控制面，已废弃，2026-11-11 已从工作区移除。
 - `krait`：旧 Rocky/Anaconda 安装路线，仍有历史资料价值。
 - `cdp-worker`：已并入 `cdp/recorder/`，2026-11-11 已从工作区移除（GitHub 有归档）。
 - `xvirt-libs`：疑似已被 `cdp/common` 吸收，2026-11-11 已从工作区移除（GitHub `free-backup/xvirt-libs`）。
