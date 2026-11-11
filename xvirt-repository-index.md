@@ -31,7 +31,7 @@ ferrostack 自己跟踪的内容：
 |---|---|---|
 | `cdp-worker` | 已并入 `cdp` | → `cdp/recorder/`（原 `worker/`，现 `cdp-recorder`，保留 `cdpwork` 软链接）；`docs/io-redirection.md` → `cdp/docs/qemu-cdp.md`。**2026-11-11 已从本工作区移除**（连同 `cdp-worker.tar.gz`）；历史在 GitHub `liu-weifeng/cdp-worker`（已归档，含本地最后提交 `624a01f`） |
 | `xbackup-tools` | 已并入 `cdp` | → `cdp/tools/xbackup/`（本工作区无此目录） |
-| `xvirt-libs` | 疑似已被 `cdp/common` 吸收 | `cdp/common/` 含同名 bitmap/xxhash 源（内容已分叉，未逐行核对）；停在 2026-01 |
+| `xvirt-libs` | 疑似已被 `cdp/common` 吸收 | `cdp/common/` 含同名 bitmap/xxhash 源（内容已分叉，未逐行核对）；**2026-11-11 已从本工作区移除**；完整历史在 GitHub `free-backup/xvirt-libs`（`main` = `59ee30c`，与本地删除前一致）。注意 `liu-weifeng/xvirt-libs` 是另一个已归档的空模板，不含这些代码。停在 2026-01 |
 | `virt-control` | 废弃 | 被 `ferrovirt` 取代，不再启动，仅作历史参考 |
 | `krait` | 旧方案 | 旧 Rocky/Anaconda 向导，新装机走 `lycan` + `fledge` |
 | `xdesk-client` | 从 qemu/xvirt 抽出 | 2026-07-19 独立成仓 |
@@ -48,7 +48,7 @@ git@kairos.xve-vt.com:local/<repo>.git        # remote 名 kairos
 说明：
 
 - 本地各仓库只保留 `kairos` remote（`qemu` 另有 `upstream` 指向 QEMU 官方上游）；旧内网 `ssh://git@192.168.60.105:2222/liuwfng/<repo>.git` 与 GitHub `liu-weifeng/<repo>` 不再配置。
-- legacy 仓库（`xvirt-libs`、`krait`、`virt-control`）未迁到 kairos，仍保留旧内网 `origin`（2026-11-11 核对：这三个仓库的本地提交 GitHub 上没有或不全，本地是唯一完整副本，勿删；`cdp-worker` 已移除，见上表）；`spdk-analysis` 的 `origin` 为上游 SPDK。
+- legacy 仓库（`krait`、`virt-control`）未迁到 kairos，仍保留旧内网 `origin`（2026-11-11 核对：这两个仓库的本地提交 GitHub 上没有或不全，本地是唯一完整副本，勿删；`cdp-worker` 已移除，见上表）；`spdk-analysis` 的 `origin` 为上游 SPDK。
 - 各表中的「当前路径 / 分支 / 当前 HEAD」仍是 2026-07 旧工作区的历史记录，以工作区实际状态为准。
 
 ## 2. 核心平台仓库
@@ -77,7 +77,7 @@ git@kairos.xve-vt.com:local/<repo>.git        # remote 名 kairos
 | xvirt-snapmig | `/root/code/xvirt/xvirt-snapmig` | main | `805411e` | 跨存储 snapshot chain 迁移工具/数据路径 | `git@kairos.xve-vt.com:local/xvirt-snapmig.git` |
 | xvirt-blockdiff | `/root/code/xvirt/xvirt-blockdiff` | main | `0b4c8da` | 块级 diff / xvdiff 相关工具，用于 petrel/OCFS2 snapshot-chain interop | `git@kairos.xve-vt.com:local/xvirt-blockdiff.git` |
 | imgtools | `/root/code/xvirt/imgtools` | main | `548f8c7` | C 磁盘镜像工具库和 CLI：raw/qcow2/vmdk、allocmap、convert | `git@kairos.xve-vt.com:local/imgtools.git` |
-| xvirt-libs | `/root/code/xvirt/xvirt-libs` | main | `59ee30c` | **[legacy，疑似已被 cdp/common 吸收]** 底层公共库/dirty bitmap 等辅助能力 | 未迁移（仅旧内网 origin） |
+| xvirt-libs | `/root/code/xvirt/xvirt-libs` | main | `59ee30c` | **[legacy，疑似已被 cdp/common 吸收；2026-11-11 已从工作区移除]** 底层公共库/dirty bitmap 等辅助能力 | GitHub `free-backup/xvirt-libs` |
 | ocfs2 | `/root/code/xvirt/ocfs2` | main | `86e3246` | OCFS2 kmod/tools 自构与集成 | `git@kairos.xve-vt.com:local/ocfs2.git` |
 
 ## 4. 部署、安装、测试与打包仓库
@@ -144,7 +144,7 @@ git@kairos.xve-vt.com:local/<repo>.git        # remote 名 kairos
 - `virt-control`：旧 Java 控制面，已废弃。
 - `krait`：旧 Rocky/Anaconda 安装路线，仍有历史资料价值。
 - `cdp-worker`：已并入 `cdp/recorder/`，2026-11-11 已从工作区移除（GitHub 有归档）。
-- `xvirt-libs`：疑似已被 `cdp/common` 吸收。
+- `xvirt-libs`：疑似已被 `cdp/common` 吸收，2026-11-11 已从工作区移除（GitHub `free-backup/xvirt-libs`）。
 
 ## 7. clone 示例（kairos）
 
