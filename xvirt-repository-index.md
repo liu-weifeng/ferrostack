@@ -68,7 +68,7 @@ git@kairos.xve-vt.com:local/<repo>.git        # remote 名 kairos
 | 仓库 | 当前路径 | 分支 | 当前 HEAD | 职责 | kairos 地址 |
 |---|---|---:|---:|---|---|---|
 | petrel | `/root/code/xvirt/petrel` | main | `0e28b36` | Rust 分布式块存储，mon/osd/vhost/ublk/deploy CLI，xvirt datastore 后端 | `git@kairos.xve-vt.com:local/petrel.git` |
-| fulmar | `/root/work/ferrostack/fulmar` | main | `b9f1a19` | Rust 用户态共享盘文件系统（替代 OCFS2）：fulmard/libfulmar/CLI/mkfs/fsck 骨架，设计见 docs/fulmar-design.md，未编译 | `git@kairos.xve-vt.com:local/fulmar.git`（待建） |
+| fulmar | `/root/work/ferrostack/fulmar` | main | `b9f1a19` | Rust 用户态共享盘文件系统（替代 OCFS2）：fulmard/libfulmar/CLI/mkfs/fsck 骨架，设计见 docs/fulmar-design.md，未编译 | `git@kairos.xve-vt.com:local/fulmar.git` |
 | aegis-sdk | `/root/code/xvirt/aegis-sdk` | main | `ac0c5f0` | C VDDK-like 备份 SDK，`libaegisdisk.so`、`aegis-cbt`、CBT 读盘 | `git@kairos.xve-vt.com:local/aegis-sdk.git` |
 | cdp-agent | `/root/code/xvirt/cdp-agent` | main | `498f026` | guest 内 CDP：Rust agent + Linux/Windows capture driver + cdp-sink | `git@kairos.xve-vt.com:local/cdp-agent.git` |
 | cdp-worker | `/root/code/xvirt/cdp-worker` | main | `624a01f` | **[已并入 cdp → cdp/recorder/，仅作历史]** 旧 CDP worker，IO 日志、索引、位图与降级模型 | 未迁移（仅旧内网 origin） |
