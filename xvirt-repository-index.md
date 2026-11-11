@@ -61,7 +61,7 @@ git@kairos.xve-vt.com:local/<repo>.git        # remote 名 kairos
 | hyper-agent | `/root/code/xvirt/hyper-agent` | main | `a779104` | Python 宿主机 agent：存储/网络/硬件/文件/petrel/memtier，VM 类 action 转 lictor | `git@kairos.xve-vt.com:local/hyper-agent.git` |
 | lictor | `/root/code/xvirt/lictor` | main | `2daa170` | Python QMP owner：VM 生命周期、快照、迁移、热插拔、console、xvirt-tools | `git@kairos.xve-vt.com:local/lictor.git` |
 | concilium | `/root/code/xvirt/concilium` | main | `7019d54` | C 集群资源管理，驱动 xvirt-vm RA 到 lictor | `git@kairos.xve-vt.com:local/concilium.git` |
-| qemu | `/root/code/xvirt/qemu` | stable-11.1-dev | `46c00088e5` | 自研 QEMU fork：CBT bitmap、memtier、迁移、vhost/petrel 相关改造 | `git@kairos.xve-vt.com:local/qemu.git` |
+| qemu | `/root/code/xvirt/qemu` | stable-11.1-dev | `f10e49dac5` | 自研 QEMU fork：CBT bitmap、memtier、迁移、vhost/petrel 相关改造 | `git@kairos.xve-vt.com:local/qemu.git` |
 
 ## 3. 存储、快照、备份与数据面仓库
 
