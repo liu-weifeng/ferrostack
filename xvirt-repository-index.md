@@ -72,7 +72,7 @@ git@kairos.xve-vt.com:local/<repo>.git        # remote 名 kairos
 | aegis-sdk | `/root/code/xvirt/aegis-sdk` | main | `ac0c5f0` | C VDDK-like 备份 SDK，`libaegisdisk.so`、`aegis-cbt`、CBT 读盘 | `git@kairos.xve-vt.com:local/aegis-sdk.git` |
 | cdp-agent | `/root/code/xvirt/cdp-agent` | main | `498f026` | guest 内 CDP：Rust agent + Linux/Windows capture driver + cdp-sink | `git@kairos.xve-vt.com:local/cdp-agent.git` |
 | cdp-worker | `/root/code/xvirt/cdp-worker` | main | `624a01f` | **[已并入 cdp → cdp/recorder/；2026-11-11 已从工作区移除，历史见 GitHub `liu-weifeng/cdp-worker`]** 旧 CDP worker，IO 日志、索引、位图与降级模型 | GitHub `liu-weifeng/cdp-worker`（已归档） |
-| cdp | `/root/work/ferrostack/cdp` | main | `a7fae95` | 现行 CDP 实现（CMake：common/plugins/tools/recorder/tests），由 cdp、cdp-worker、xbackup-tools 合并而来；`cdp-recorder`（原 cdpwork）数据面，format-v2 格式；QEMU 侧 QMP 为 `cdp-*`；日志引擎设计稿 `docs/log-engine.md`，P0 Rust 骨架 `cdplog/`（未编译未测试） | `git@kairos.xve-vt.com:local/cdp.git` |
+| cdp | `/root/work/ferrostack/cdp` | main | `0558379` | 现行 CDP 实现（CMake：common/plugins/tools/recorder/tests），由 cdp、cdp-worker、xbackup-tools 合并而来；`cdp-recorder`（原 cdpwork）数据面，format-v2 格式；QEMU 侧 QMP 为 `cdp-*`；日志引擎设计稿 `docs/log-engine.md`，Rust 实现 `cdplog/`（P0 加 P1 的一部分，未编译未测试） | `git@kairos.xve-vt.com:local/cdp.git` |
 | snapshot-helper | `/root/code/xvirt/snapshot-helper` | main | `6ab1a4f` | QEMU 内存快照 helper，将追加迁移流改为稀疏页覆写文件 | `git@kairos.xve-vt.com:local/snapshot-helper.git` |
 | xvirt-snapmig | `/root/code/xvirt/xvirt-snapmig` | main | `805411e` | 跨存储 snapshot chain 迁移工具/数据路径 | `git@kairos.xve-vt.com:local/xvirt-snapmig.git` |
 | xvirt-blockdiff | `/root/code/xvirt/xvirt-blockdiff` | main | `0b4c8da` | 块级 diff / xvdiff 相关工具，用于 petrel/OCFS2 snapshot-chain interop | `git@kairos.xve-vt.com:local/xvirt-blockdiff.git` |
