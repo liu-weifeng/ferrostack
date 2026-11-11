@@ -1,19 +1,19 @@
-# KFS：面向虚拟化的用户态共享磁盘文件系统设计方案（替代 OCFS2）
+# Fulmar：面向虚拟化的用户态共享磁盘文件系统设计方案（替代 OCFS2）
 
 > 生成时间：2026-11-09
 > 状态：设计稿 v1.1，未动代码。v1.1 修订（2026-11-09）：块设备后端改为**内核裸盘 io_uring 为默认**，SPDK 降为可选加速档；memtier 直通改以块设备 fd 传递为主（§4.3、§8.3、§十六）
 > 适用范围：`hyper-agent`（datastore 后端 / 控制面）、`qemu`（块驱动 + memtier 后端）、`xvirt-blockdiff` / `xvirt-snapmig` / `cdp`（快照链与差异）、`petrel`（可共享 io_uring 与 vhost-user-blk 代码）
 > 关联文档：`docs/qemu-memtier-interface.md`、`docs/memtier-swapcache-design.md`、`docs/drive-mirror-sparse-thick-design.md`、`docs/resource-planning.md`、`xvirt-blockdiff/README.md`
-> 名称说明：KFS 为暂定工作名（daemon `kfsd`、客户端库 `libkfs`、QEMU 驱动 `kfs`），可随时改。
+> 名称说明：Fulmar（暴风鹱，与 petrel 同科）。daemon `fulmard`、客户端库 `libfulmar`、QEMU 驱动与 URL 前缀 `fulmar:`、`mkfs.fulmar`、datastore `fs_type=fulmar`。
 
 ---
 
 ## 目录
 
 1. [背景、目标与非目标](#一背景目标与非目标)
-2. [OCFS2 的问题根因与 KFS 的对应解法](#二ocfs2-的问题根因与-kfs-的对应解法)
+2. [OCFS2 的问题根因与 Fulmar 的对应解法](#二ocfs2-的问题根因与-fulmar-的对应解法)
 3. [总体架构](#三总体架构)
-4. [数据路径：libkfs、共享内存环与块设备后端](#四数据路径libkfs共享内存环与块设备后端)
+4. [数据路径：libfulmar、共享内存环与块设备后端](#四数据路径libfulmar共享内存环与块设备后端)
 5. [盘上格式与元数据](#五盘上格式与元数据)
 6. [COW / reflink / 快照：O(1) reflink 与无读放大的 ROW](#六cow--reflink--快照o1-reflink-与无读放大的-row)
 7. [动态块大小与碎片治理](#七动态块大小与碎片治理)
@@ -49,23 +49,23 @@
 | G4 | **快照后首写无读放大**：不先拷旧块再写 | 快照后 4K 随机写延迟 ≈ 裸盘 4K 写 + ≤10µs |
 | G5 | **低延迟高带宽**：数据路径不经内核文件系统与页缓存，io_uring 直写裸块设备；SPDK 为可选加速 | 4K 随机读相对裸盘附加延迟 ≤ 8µs（io_uring 轮询）/ ≤ 5µs（SPDK 档）；大块顺序吞吐 ≥ 95% 裸盘 |
 | G6 | **动态块大小**：寻址粒度固定 4K，分配 / COW 粒度按介质与负载自适应 | 见 §七 |
-| G7 | **memtier 换入低延迟**：换出后端文件放在 KFS 上，换入路径不经 daemon 或只经一次忙轮询环 | 换入 4K 读延迟 ≈ 裸盘 |
+| G7 | **memtier 换入低延迟**：换出后端文件放在 Fulmar 上，换入路径不经 daemon 或只经一次忙轮询环 | 换入 4K 读延迟 ≈ 裸盘 |
 | G8 | 集群：**网络 + 磁盘双通道**、**ATS（Compare-and-Write）盘上锁**、**快速 fence**（停掉故障侧数据路径，而非 panic 整机） | 故障检测 ≤ 7s，接管 ≤ 10s |
 | G9 | **按磁盘限速**（IOPS / 带宽 / 突发，读写分开），在线调整 | 控制 API 一次调用生效 |
-| G10 | 快照链工具链平滑：差异提取、跨 datastore 迁移、CDP 继续可用，且比 FIEMAP 全扫更快 | `kfs diff` O(变化量) |
+| G10 | 快照链工具链平滑：差异提取、跨 datastore 迁移、CDP 继续可用，且比 FIEMAP 全扫更快 | `fulmar diff` O(变化量) |
 
 ### 1.3 非目标（本期不做）
 
-- 通用 POSIX 文件系统（硬链接、权限模型、mmap、xattr 泛化、海量小文件）。KFS 的对象是**少量大文件**（VM 磁盘、memtier 后端、内存快照、ISO）。
+- 通用 POSIX 文件系统（硬链接、权限模型、mmap、xattr 泛化、海量小文件）。Fulmar 的对象是**少量大文件**（VM 磁盘、memtier 后端、内存快照、ISO）。
 - 数据压缩、去重、加密（可留格式位）。
 - 多 LUN 拼接（spanning）与分层介质池（先单设备 + 在线扩容；格式预留）。
-- 替代 petrel：petrel 是副本 / EC 的分布式块存储，KFS 是**共享磁盘（SAN / 多路 NVMe-oF / 本地盘）之上的文件系统**，两者并存，由 datastore 类型选择。
+- 替代 petrel：petrel 是副本 / EC 的分布式块存储，Fulmar 是**共享磁盘（SAN / 多路 NVMe-oF / 本地盘）之上的文件系统**，两者并存，由 datastore 类型选择。
 
 ---
 
-## 二、OCFS2 的问题根因与 KFS 的对应解法
+## 二、OCFS2 的问题根因与 Fulmar 的对应解法
 
-| 问题 | OCFS2 根因 | KFS 解法 | 详见 |
+| 问题 | OCFS2 根因 | Fulmar 解法 | 详见 |
 |---|---|---|---|
 | **碎片化后 reflink 变慢** | reflink 要**遍历源文件整棵 extent 树并逐 extent 复制 + 逐 extent 更新 refcount 树**，复杂度 O(extent 数)，每步都进 journal；碎片越多越慢 | reflink = 新 inode 指向**同一棵 extent B+ 树的根**并给根加引用，O(1)；数据 extent 的引用计数**延迟到该叶子第一次被 COW 时成批补**（btrfs 式惰性传播） | §6.2 |
 | **快照后写放大** | COW 以 **cluster**（通常 1MB）为单位：4K 写要先读 1MB 旧数据、写 1MB 新位置（RMW），再更新 refcount / extent 树 | **ROW（Redirect-on-Write）**：只为被写的 4K 对齐范围分配新 extent，不读不拷旧数据；旧数据仍归快照引用。粒度按策略自适应（§七） | §6.3 |
@@ -75,7 +75,7 @@
 | 故障处理 = 整机 panic / reboot | o2cb 心跳超时触发 panic | **自 fence 停掉数据路径**（QEMU 收 EIO 暂停），幸存者用 **PR 抢占**兜底，不重启主机 | §9.5 |
 | 心跳慢（默认 31×2s≈62s） | 盘心跳固定保守 | 盘 + 网双心跳，默认 1s 间隔、6 次判死（≈7s） | §9.2 |
 | 零区 / 厚盘语义别扭（`ZERO_RANGE` 不支持，unwritten 报 hole） | 内核 fallocate 语义限制 | 块状态 API 直接给 QEMU（allocated / zero / unwritten / shared），`write_zeroes` 是元数据操作 | §12.2、`drive-mirror-sparse-thick-design.md` |
-| 快照差异要 FIEMAP 全盘扫 | 没有树级差异接口 | 两快照共享子树指针相同 → 跳过，`kfs diff` O(变化量) | §12.4 |
+| 快照差异要 FIEMAP 全盘扫 | 没有树级差异接口 | 两快照共享子树指针相同 → 跳过，`fulmar diff` O(变化量) | §12.4 |
 
 ---
 
@@ -83,11 +83,11 @@
 
 ```
 ┌─────────────────────────── 宿主机 N ───────────────────────────┐
-│  hyper-agent ──控制 API(unix socket, JSON)──► kfsd (每主机一个) │
+│  hyper-agent ──控制 API(unix socket, JSON)──► fulmard (每主机一个) │
 │                                                │               │
-│  QEMU(VM a) ─libkfs─┐  共享内存环(SQ/CQ, hugepage)│  ┌─────────┐ │
-│   ├ block/kfs.c     ├───────────────────────────┼─►│ IO 线程 │ │
-│   └ memtier kfs 后端┘  (或 直通租约: 见 §8.3)     │  │ (轮询)  │ │
+│  QEMU(VM a) ─libfulmar─┐  共享内存环(SQ/CQ, hugepage)│  ┌─────────┐ │
+│   ├ block/fulmar.c     ├───────────────────────────┼─►│ IO 线程 │ │
+│   └ memtier fulmar 后端┘  (或 直通租约: 见 §8.3)     │  │ (轮询)  │ │
 │                                                │  └────┬────┘ │
 │  QEMU(VM b) ─vhost-user-blk(零拷贝, 无 memtier)──┤       │      │
 │                                                │  块后端抽象   │
@@ -106,17 +106,17 @@
 
 | 组件 | 职责 | 语言 / 依赖 |
 |---|---|---|
-| `kfsd` | 每主机一个常驻进程：挂载 datastore、以 io_uring 打开裸块设备（可选 SPDK）、运行 IO 线程轮询数据环、元数据与 journal、集群成员 / 心跳 / 锁、QoS、FUSE 网关 | Rust 或 C；见 §17 |
-| `libkfs` | 客户端库：打开文件、异步读写 / flush / discard / write_zeroes / block_status、extent 租约（memtier 直通） | C ABI，QEMU 直接链接 |
-| QEMU `block/kfs.c` | 块驱动，协议 `kfs:<datastore>/<path>`；接 `bdrv_co_preadv/pwritev/flush/pdiscard/pwrite_zeroes/block_status` | QEMU fork |
-| QEMU `memtier/backing-kfs.c` | memtier 换出后端，`path: "kfs:…"` | QEMU fork |
-| `kfs` CLI | mkfs / mount / snap / reflink / diff / fiemap / stat / qos / cluster | 走控制 API |
-| `kfs-fsck` / `kfs-scrub` | 离线修复、在线校验 | 独立 |
+| `fulmard` | 每主机一个常驻进程：挂载 datastore、以 io_uring 打开裸块设备（可选 SPDK）、运行 IO 线程轮询数据环、元数据与 journal、集群成员 / 心跳 / 锁、QoS、FUSE 网关 | Rust 或 C；见 §17 |
+| `libfulmar` | 客户端库：打开文件、异步读写 / flush / discard / write_zeroes / block_status、extent 租约（memtier 直通） | C ABI，QEMU 直接链接 |
+| QEMU `block/fulmar.c` | 块驱动，协议 `fulmar:<datastore>/<path>`；接 `bdrv_co_preadv/pwritev/flush/pdiscard/pwrite_zeroes/block_status` | QEMU fork |
+| QEMU `memtier/backing-fulmar.c` | memtier 换出后端，`path: "fulmar:…"` | QEMU fork |
+| `fulmar` CLI | mkfs / mount / snap / reflink / diff / fiemap / stat / qos / cluster | 走控制 API |
+| `fulmar-fsck` / `fulmar-scrub` | 离线修复、在线校验 | 独立 |
 | FUSE 网关 | 把 datastore 以只读或低速读写 POSIX 目录暴露，供 qemu-img、浏览、上传 | libfuse3 passthrough |
 
 ### 3.2 关键设计取向
 
-1. **一台主机一个 FS 实例**（`kfsd`），所有客户端都附着到它；集群中每个节点就是 OCFS2 意义上的一个"挂载"。
+1. **一台主机一个 FS 实例**（`fulmard`），所有客户端都附着到它；集群中每个节点就是 OCFS2 意义上的一个"挂载"。
 2. **所有权分区**：每个文件（VM 盘）任一时刻只属于一个节点（运行该 VM 的节点）；空间分配以 **AG（allocation group）为单位租给节点**。于是文件 extent 树是**单写者**，热路径没有分布式锁，锁只剩慢路径（命名空间、AG 租约、跨节点释放）。
 3. **快照不可变**：快照 inode 只读，可被任意节点同时打开读（备份、跨存储迁移、CDP 回放），不需要任何锁。
 4. **数据绕过内核文件系统**：数据面只经过内核块层（io_uring + O_DIRECT 直写裸块设备），没有页缓存、没有 VFS；需要再省几微秒时可换 SPDK 用户态驱动（vfio），上层代码不变。
@@ -124,29 +124,29 @@
 
 ---
 
-## 四、数据路径：libkfs、共享内存环与块设备后端
+## 四、数据路径：libfulmar、共享内存环与块设备后端
 
 ### 4.1 三种附着方式
 
 | 方式 | 适用 | 数据拷贝 | 与 memtier 兼容 | 相对裸盘附加延迟（目标） |
 |---|---|---|---|---|
-| **A. 共享内存环（默认）** | 所有 VM 盘 | 1 次 memcpy（libkfs ↔ 环内 bounce 缓冲，hugepage） | **兼容**（客户机内存保持匿名页） | 环本身：忙轮询 ≤ 5µs，eventfd 唤醒 ≤ 15µs；后端开销另计（§4.3） |
+| **A. 共享内存环（默认）** | 所有 VM 盘 | 1 次 memcpy（libfulmar ↔ 环内 bounce 缓冲，hugepage） | **兼容**（客户机内存保持匿名页） | 环本身：忙轮询 ≤ 5µs，eventfd 唤醒 ≤ 15µs；后端开销另计（§4.3） |
 | **B. vhost-user-blk 零拷贝** | 不开 memtier、追求极限吞吐的 VM | 0 | 不兼容（需 `memory-backend-memfd,share=on`） | ≤ 3µs |
 | **C. extent 租约直通** | memtier 换出后端；（二期）VM 盘只读热路径 | 0（客户端对块设备 fd 自己发 io_uring） | 兼容 | ≈ 0（与现有裸分区后端同路径） |
 
-A 是基线：一次 4K memcpy < 1µs，1MB 约 50–100µs 但大块 IO 本身耗时更长且可并行，吞吐仍能到介质上限；换取的是**客户机内存不必共享**，这正是 memtier 的前提。B 复用 petrel 已验证的 rust-vmm vhost-user-blk 栈（后端选 SPDK 时也可用 SPDK vhost-blk target），把后端换成 KFS 文件即可。C 见 §8.3。
+A 是基线：一次 4K memcpy < 1µs，1MB 约 50–100µs 但大块 IO 本身耗时更长且可并行，吞吐仍能到介质上限；换取的是**客户机内存不必共享**，这正是 memtier 的前提。B 复用 petrel 已验证的 rust-vmm vhost-user-blk 栈（后端选 SPDK 时也可用 SPDK vhost-blk target），把后端换成 Fulmar 文件即可。C 见 §8.3。
 
 ### 4.2 共享内存环
 
-- 每个客户端进程连接 `kfsd` 时协商一块 hugepage 共享内存：**每 vCPU 线程或每 QEMU iothread 一对 SQ/CQ**（无锁 SPSC），加一片 bounce 缓冲池（按 4K / 64K / 1M 三档 slab）。
+- 每个客户端进程连接 `fulmard` 时协商一块 hugepage 共享内存：**每 vCPU 线程或每 QEMU iothread 一对 SQ/CQ**（无锁 SPSC），加一片 bounce 缓冲池（按 4K / 64K / 1M 三档 slab）。
 - 请求：`{op, fh, offset, len, iov(环内偏移), flags(FUA/…), tag}`；完成：`{tag, status, bytes}`。
-- 通知：默认 `kfsd` reactor 忙轮询环；客户端侧忙轮询可选（`poll-us` 自适应：先轮询 N µs 再退到 eventfd），和 memtier 的 `busy-poll` / `io-poll` 旋钮口径一致。
-- NUMA：环与 bounce 缓冲分配在客户端所在 NUMA 节点；`kfsd` 每 NUMA 节点至少一个 IO 线程；轮询模式下独占核，从资源规划的 `spdk` 池划拨（建议改称存储池），eventfd 模式不独占核。
-- 安全：unix socket 传 memfd，`kfsd` 校验每个 iov 落在该客户端自己的环区间内。
+- 通知：默认 `fulmard` reactor 忙轮询环；客户端侧忙轮询可选（`poll-us` 自适应：先轮询 N µs 再退到 eventfd），和 memtier 的 `busy-poll` / `io-poll` 旋钮口径一致。
+- NUMA：环与 bounce 缓冲分配在客户端所在 NUMA 节点；`fulmard` 每 NUMA 节点至少一个 IO 线程；轮询模式下独占核，从资源规划的 `spdk` 池划拨（建议改称存储池），eventfd 模式不独占核。
+- 安全：unix socket 传 memfd，`fulmard` 校验每个 iov 落在该客户端自己的环区间内。
 
 ### 4.3 块设备后端：内核裸盘为默认，SPDK 为可选
 
-`kfsd` 经一层薄的块后端抽象（提交 / 完成、flush、discard、write_zeroes、CAW、PR、能力探测）访问整块 LUN 或分区。两种实现，盘上格式与上层代码完全相同，可按主机切换：
+`fulmard` 经一层薄的块后端抽象（提交 / 完成、flush、discard、write_zeroes、CAW、PR、能力探测）访问整块 LUN 或分区。两种实现，盘上格式与上层代码完全相同，可按主机切换：
 
 | 后端 | 打开方式 | 适用 |
 |---|---|---|
@@ -163,7 +163,7 @@ A 是基线：一次 4K memcpy < 1µs，1MB 约 50–100µs 但大块 IO 本身�
 | 对低延迟介质 / NVMe-oF（10–20µs） | 附加 30–50% | 附加约 10% |
 | 带宽 | 几个核即可打满 PCIe 4/5 单盘 | 同 |
 | CPU | 按需；可中断可轮询 | 独占核 100% 忙等 |
-| 盘的共享 | 同一块 NVMe 可分区分别给 KFS、XFS、memtier 裸分区 | 整个控制器被 vfio 独占 |
+| 盘的共享 | 同一块 NVMe 可分区分别给 Fulmar、XFS、memtier 裸分区 | 整个控制器被 vfio 独占 |
 | ATS / PR | NVMe passthrough / `SG_IO` 发 CAW；PR 用块层统一 ioctl，SCSI 与 NVMe 一套接口 | API 直接；NVMe-oF 目标端支持参差 |
 | 多路径 | dm-multipath 成熟 | SPDK multipath 较新 |
 | FC SAN | 支持 | 不支持 |
@@ -173,7 +173,7 @@ A 是基线：一次 4K memcpy < 1µs，1MB 约 50–100µs 但大块 IO 本身�
 
 ### 4.4 IO 大小、队列与并发
 
-- 单请求上限 1MB（与 QEMU `max_transfer` 对齐），大 IO 在 `kfsd` 内按 extent 边界切分并发下发。
+- 单请求上限 1MB（与 QEMU `max_transfer` 对齐），大 IO 在 `fulmard` 内按 extent 边界切分并发下发。
 - 读写 extent 查找走每文件的**叶子缓存**（§5.4），命中时零元数据 IO。
 - 写路径见 §6.3；FLUSH 见 §十一。
 
@@ -247,7 +247,7 @@ reflink(src → dst):
 - **COW 一个共享的叶子**时：叶内所有数据 extent 引用 +1（按 AG 分组批量写各 AG 的 refcount 树，一个事务），旧叶引用 -1。
 - 以上发生在写路径的慢分支（§6.3 第 2 步），一叶最多发生一次，之后该叶归活盘独有。
 
-> 与 OCFS2 对比：OCFS2 把"所有 extent 引用 +1"放在 reflink 时刻一次做完（O(N) 且阻塞快照），KFS 把它摊到后续第一次写入每片叶子时，且被写得少的区域永远不付这笔账。
+> 与 OCFS2 对比：OCFS2 把"所有 extent 引用 +1"放在 reflink 时刻一次做完（O(N) 且阻塞快照），Fulmar 把它摊到后续第一次写入每片叶子时，且被写得少的区域永远不付这笔账。
 
 ### 6.3 写路径（ROW）
 
@@ -272,13 +272,13 @@ write(D, off, len):
 
 ### 6.4 快照链操作对照
 
-| 操作 | 现 OCFS2 流程 | KFS |
+| 操作 | 现 OCFS2 流程 | Fulmar |
 |---|---|---|
-| 建快照 | `cp --reflink D S` | `kfs snap D S`（O(1)） |
-| 删中间快照 | `rm S_k` | `kfs rm S_k`，后台回收，链路对上层仍连续 |
-| 回滚 | `cp --reflink S_k D'` 换盘 | `kfs reflink S_k D'` + 原子重命名 |
-| 差异 | `xvirt-blockdiff diff S_k S_k+1`（FIEMAP 全扫） | `kfs diff S_k S_k+1 -o .xvdiff`（树级比对，同格式输出） |
-| 跨存储迁移 | reflink + merge 重建链 | 同，`kfs` 侧提供 `apply/splat` 等价能力或继续用 blockdiff |
+| 建快照 | `cp --reflink D S` | `fulmar snap D S`（O(1)） |
+| 删中间快照 | `rm S_k` | `fulmar rm S_k`，后台回收，链路对上层仍连续 |
+| 回滚 | `cp --reflink S_k D'` 换盘 | `fulmar reflink S_k D'` + 原子重命名 |
+| 差异 | `xvirt-blockdiff diff S_k S_k+1`（FIEMAP 全扫） | `fulmar diff S_k S_k+1 -o .xvdiff`（树级比对，同格式输出） |
+| 跨存储迁移 | reflink + merge 重建链 | 同，`fulmar` 侧提供 `apply/splat` 等价能力或继续用 blockdiff |
 
 ---
 
@@ -323,14 +323,14 @@ write(D, off, len):
 ### 8.1 现状约束（来自 `docs/qemu-memtier-interface.md`）
 
 - 后端要求：`O_RDWR|O_DIRECT`、无空洞、无 unwritten extent（有则告警）、容量 ≥ 客户机 RAM、支持 discard（块设备默认开）；slot 4K、chunk 2MB 日志式分配 + 压实；换入是**同步 4K 读**，延迟直接决定客户机缺页停顿。
-- memtier 与 vhost-user 共享内存互斥；`spdk:` 路径说明 QEMU 已能作为 SPDK 应用初始化（KFS 不依赖这一点）。
+- memtier 与 vhost-user 共享内存互斥；`spdk:` 路径说明 QEMU 已能作为 SPDK 应用初始化（Fulmar 不依赖这一点）。
 - 迁移能力 `memtier-shared-backing`：源目的能看到同一后端时，换出页不传输。
 
-### 8.2 KFS 为 memtier 提供的文件类：`pinned`
+### 8.2 Fulmar 为 memtier 提供的文件类：`pinned`
 
 | 属性 | 行为 |
 |---|---|
-| 创建即全量分配并**物理写零或 WRITE ZEROES** | 没有空洞、没有 unwritten；满足 memtier FIEMAP 检查的精神（通过 KFS block_status 直接返回 allocated） |
+| 创建即全量分配并**物理写零或 WRITE ZEROES** | 没有空洞、没有 unwritten；满足 memtier FIEMAP 检查的精神（通过 Fulmar block_status 直接返回 allocated） |
 | **不参与快照 / reflink**，不可 COW | extent 映射创建后不变 → 可以安全地把映射租给客户端 |
 | `extsize` = 2MB，与 memtier chunk 对齐 | 一个 chunk 落在一个 extent 内，discard 一个 chunk = 一次 TRIM |
 | discard 直接透传到设备 | 等价于块设备上的 `BLKDISCARD`，不走元数据（不会出现"文件上开 discard 拖慢 40%"的 XFS 现象） |
@@ -340,16 +340,16 @@ write(D, off, len):
 ### 8.3 换入路径：extent 租约直通（方式 C）
 
 ```
-QEMU memtier/backing-kfs.c:
-  open("kfs:ds1/vm-123.swap", LEASE_EXTENTS)
-    → libkfs 向 kfsd 申请租约，取回完整 extent 表（pinned 文件 2MB 一条，64GB 仅 32K 条）
+QEMU memtier/backing-fulmar.c:
+  open("fulmar:ds1/vm-123.swap", LEASE_EXTENTS)
+    → libfulmar 向 fulmard 申请租约，取回完整 extent 表（pinned 文件 2MB 一条，64GB 仅 32K 条）
        以及设备访问句柄：
          默认：块设备 fd（SCM_RIGHTS 传递，O_DIRECT），QEMU 用自己的 io_uring 实例，
                与现有裸分区后端是同一条代码路径
-         可选：SPDK 多进程，QEMU 作为二级进程拿同一 NVMe 控制器自己的 qpair（仅当 kfsd 后端为 spdk）
-  换入 4K：slot → 文件偏移 → 查内存 extent 表 → 直接对 fd 发 io_uring 读。路径上没有 kfsd。
+         可选：SPDK 多进程，QEMU 作为二级进程拿同一 NVMe 控制器自己的 qpair（仅当 fulmard 后端为 spdk）
+  换入 4K：slot → 文件偏移 → 查内存 extent 表 → 直接对 fd 发 io_uring 读。路径上没有 fulmard。
   换出写、discard：同样直通。
-  租约失效（文件被删除 / 节点 fence）→ kfsd 单向通知，libkfs 立即停止下发并回 EIO。
+  租约失效（文件被删除 / 节点 fence）→ fulmard 单向通知，libfulmar 立即停止下发并回 EIO。
 ```
 
 - 延迟：等于现在裸块设备后端的延迟（同一套 io_uring 代码，`io-poll` / `busy-poll` 旋钮原样生效）；比起直接用裸分区，多的只是**一次性**的租约获取。
@@ -361,8 +361,8 @@ QEMU memtier/backing-kfs.c:
 
 - `backing-discard`：pinned 文件默认 true（与块设备一致）。
 - `io-poll` / `busy-poll`：直通路径维持现语义（IOPOLL 需 NVMe poll 队列）；SPDK 直通恒为轮询。
-- 统计：`backing-*` 字段来源不变；KFS 另给出该文件所在设备的队列深度与延迟直方图供监控合并（`docs/memtier-monitoring-design.md`）。
-- 内存快照（`memtier-snapshot-design.md` 的两文件产物）可放 KFS 普通文件或 FUSE 网关路径，非热路径。
+- 统计：`backing-*` 字段来源不变；Fulmar 另给出该文件所在设备的队列深度与延迟直方图供监控合并（`docs/memtier-monitoring-design.md`）。
+- 内存快照（`memtier-snapshot-design.md` 的两文件产物）可放 Fulmar 普通文件或 FUSE 网关路径，非热路径。
 
 ---
 
@@ -404,17 +404,17 @@ QEMU memtier/backing-kfs.c:
 
 - 仲裁：以磁盘心跳位图为准，分区中节点数多者赢；平手取含最小 id 者。输方**自 fence**。
 - **自 fence（"卸载故障侧"）**：
-  1. `kfsd` 立即把块后端置为拒绝提交，**在途 IO 等待完成或超时**（NVMe abort），所有客户端环回 `EIO/ESHUTDOWN`，租约直通客户端收到撤销通知并停发；
-  2. QEMU `werror=stop,rerror=stop` → VM 暂停（不崩），hyper-agent 收到 `kfsd` 事件 `FENCED`；
-  3. `kfsd` 停止心跳写、释放不了的 ATS 锁留给幸存者回收；
-  4. **不 panic、不重启主机**。恢复连通后 `kfsd` 以新 epoch 重新加入，VM 由 hyper-agent 决定在原地恢复（若尚未被别处拉起）或已被 HA 接管则销毁。
+  1. `fulmard` 立即把块后端置为拒绝提交，**在途 IO 等待完成或超时**（NVMe abort），所有客户端环回 `EIO/ESHUTDOWN`，租约直通客户端收到撤销通知并停发；
+  2. QEMU `werror=stop,rerror=stop` → VM 暂停（不崩），hyper-agent 收到 `fulmard` 事件 `FENCED`；
+  3. `fulmard` 停止心跳写、释放不了的 ATS 锁留给幸存者回收；
+  4. **不 panic、不重启主机**。恢复连通后 `fulmard` 以新 epoch 重新加入，VM 由 hyper-agent 决定在原地恢复（若尚未被别处拉起）或已被 HA 接管则销毁。
 - **幸存者侧 fence（兜底，解决"僵尸 IO"）**：存储支持 SCSI-3 PR / NVMe Reservation 时（`uring` 后端用块层统一的 `IOC_PR_REGISTER` / `IOC_PR_PREEMPT` ioctl，SCSI 与 NVMe 同一接口），每节点注册 key；判死后幸存者 `PREEMPT` 其 key，存储层拒绝它一切后续写。不支持 PR 时，依赖时序保证：自 fence 的触发点（自己 `hb-dead/2` 周期写不进心跳）严格早于幸存者接管点（`hb-dead` 周期 + 恢复锁），并把 NVMe 命令超时设短于该差值。
 - **恢复**：拿到"恢复锁(ATS)"的幸存者重放死节点 journal → 回收其 AG 租约 / inode 所有权 → 执行其未完成的延迟释放 → 标记槽位可用。journal ≤ 512MB，目标 ≤ 2s。
 - 时间目标：检测 ≈ 6–7s，接管 ≤ 10s；可按场景调 `hb-interval`/`hb-dead`。
 
 ### 9.6 在线迁移时的所有权交接
 
-QEMU 迁移中源与目的同时打开同一活盘：目的以 `inactive` 打开（只建映射，不写），源在 `bdrv_inactivate` 时通过 libkfs 发起**所有权移交**（源节点 `kfsd` 释放 inode 所有权 ATS 锁并把叶缓存脏数据提交，目的节点抢锁并激活）。失败则迁移回滚，源重新激活。这是 OCFS2 用 DLM 隐式完成的事，KFS 显式化为协议，`lictor`/`hyper-agent` 的迁移流程只需在现有 `inactivate → 切换` 点调用。
+QEMU 迁移中源与目的同时打开同一活盘：目的以 `inactive` 打开（只建映射，不写），源在 `bdrv_inactivate` 时通过 libfulmar 发起**所有权移交**（源节点 `fulmard` 释放 inode 所有权 ATS 锁并把叶缓存脏数据提交，目的节点抢锁并激活）。失败则迁移回滚，源重新激活。这是 OCFS2 用 DLM 隐式完成的事，Fulmar 显式化为协议，`lictor`/`hyper-agent` 的迁移流程只需在现有 `inactivate → 切换` 点调用。
 
 ---
 
@@ -432,7 +432,7 @@ QEMU 迁移中源与目的同时打开同一活盘：目的以 `inactive` 打开
 
 - **无数据缓存**：客户机写直达设备，`FUA` 透传。
 - **元数据**：内存中 COW 树修改 + 每节点 **intent log（journal）组提交**（默认 ≤ 200µs 或凑满 64K 即落盘）；**检查点**每 5s 或 journal 用量 50% 时把 COW 树根写入超级块（原子）。
-- **写完成语义**：KFS 向 QEMU 暴露"带易失写缓存"的设备（virtio-blk `WCE=1`），即**数据落盘但映射记录可能还在组提交批里**时就可完成写；客户机 `FLUSH` → 等待 journal 落盘 + 设备 flush。这与 qcow2 `lazy_refcounts`、裸盘写缓存语义等价，是低延迟的关键；可用 `sync-meta=always` 强制每写等 journal。
+- **写完成语义**：Fulmar 向 QEMU 暴露"带易失写缓存"的设备（virtio-blk `WCE=1`），即**数据落盘但映射记录可能还在组提交批里**时就可完成写；客户机 `FLUSH` → 等待 journal 落盘 + 设备 flush。这与 qcow2 `lazy_refcounts`、裸盘写缓存语义等价，是低延迟的关键；可用 `sync-meta=always` 强制每写等 journal。
 - **ROW 保证不暴露垃圾**：新映射只在新数据落盘后发布；崩溃丢的只是未 FLUSH 的最新写，读回的是快照版旧数据，符合块设备语义。
 - **ENOSPC**：元数据全局保留区（≥ 1% 或 2GB）保证删除 / 释放永远能执行；活盘写 ENOSPC 时 QEMU `werror=enospc` 暂停 VM，上层扩容后恢复。
 - **崩溃恢复**：超级块最新检查点 + 重放本节点 journal；延迟释放队列持久化，幂等重放。
@@ -446,21 +446,21 @@ QEMU 迁移中源与目的同时打开同一活盘：目的以 `inactive` 打开
 
 `fs.mkfs / fs.mount / fs.umount / fs.grow`、`cluster.{status,add,remove,enable,fence}`、`file.{create,delete,rename,resize,stat,list,set-policy}`、`snap.{create,delete,diff}`、`reflink`、`qos.set`、`events.subscribe`（`FENCED / DEGRADED / ENOSPC / LEASE_REVOKED / RECOVERED`）。
 
-### 12.2 数据 API（libkfs，C ABI）
+### 12.2 数据 API（libfulmar，C ABI）
 
-`kfs_open/close`、`kfs_preadv/pwritev/flush/discard/write_zeroes`（异步 + 完成回调或轮询）、`kfs_block_status(off, len) → {allocated|zero|unwritten|hole, shared, phys?}`、`kfs_lease_extents`（pinned 文件）、`kfs_set_inactive/activate`（迁移交接）。
+`fulmar_open/close`、`fulmar_preadv/pwritev/flush/discard/write_zeroes`（异步 + 完成回调或轮询）、`fulmar_block_status(off, len) → {allocated|zero|unwritten|hole, shared, phys?}`、`fulmar_lease_extents`（pinned 文件）、`fulmar_set_inactive/activate`（迁移交接）。
 
-QEMU `block/kfs.c` 把 `block_status` 直接映射给 `bdrv_co_block_status`，从而 drive-mirror 的零区跳过与厚薄盘判定（`drive-mirror-sparse-thick-design.md`）天然成立：厚盘 = `thick` 配额 + UNWRITTEN，报 `ZERO`；无 `ZERO_RANGE` 退化问题。
+QEMU `block/fulmar.c` 把 `block_status` 直接映射给 `bdrv_co_block_status`，从而 drive-mirror 的零区跳过与厚薄盘判定（`drive-mirror-sparse-thick-design.md`）天然成立：厚盘 = `thick` 配额 + UNWRITTEN，报 `ZERO`；无 `ZERO_RANGE` 退化问题。
 
 ### 12.3 POSIX 网关（FUSE）
 
-只服务管理用途：qemu-img 转换导入、ISO 上传、浏览、备份工具读取快照、`snapshot-helper` 写内存快照文件。读写经 `kfsd`，性能够用即可；活盘**禁止**经 FUSE 写（打开即拒绝，防绕过所有权）。
+只服务管理用途：qemu-img 转换导入、ISO 上传、浏览、备份工具读取快照、`snapshot-helper` 写内存快照文件。读写经 `fulmard`，性能够用即可；活盘**禁止**经 FUSE 写（打开即拒绝，防绕过所有权）。
 
 ### 12.4 工具
 
-- `kfs diff S_a S_b`：自两根向下比对，子树指针相同即跳过，输出 `.xvdiff`（与 `xvirt-blockdiff`、`petrel-snapdiff` 同格式，上下游无需改）。
-- `kfs fiemap F`：等价 FIEMAP 输出（逻辑、物理、长度、shared/unwritten 标志），保留现有工具兼容路径。
-- `kfs stat F`：extent 数、共享比例、`cow_chunk` 当前值、碎片度、QoS 统计。
+- `fulmar diff S_a S_b`：自两根向下比对，子树指针相同即跳过，输出 `.xvdiff`（与 `xvirt-blockdiff`、`petrel-snapdiff` 同格式，上下游无需改）。
+- `fulmar fiemap F`：等价 FIEMAP 输出（逻辑、物理、长度、shared/unwritten 标志），保留现有工具兼容路径。
+- `fulmar stat F`：extent 数、共享比例、`cow_chunk` 当前值、碎片度、QoS 统计。
 
 ---
 
@@ -468,13 +468,13 @@ QEMU `block/kfs.c` 把 `block_status` 直接映射给 `bdrv_co_block_status`，�
 
 | 组件 | 改动 |
 |---|---|
-| `hyper-agent` datastore | 新 backend `kfs.py`（`SUPPORTED_FS_TYPES` 加 `kfs`）：mkfs / mount / 快照 / reflink / diff / QoS 全走控制 API；VM 配置文件仍可放 KFS（FUSE 路径）或本地 datastore |
-| `hyper-agent` qemu_command | 盘类型 `kfs` 生成 `-blockdev driver=kfs,…` 或（零拷贝档）vhost-user-blk；memtier `path` 支持 `kfs:` |
-| `qemu` | 新增 `block/kfs.c`、`memtier/backing-kfs.c`；迁移 `inactivate` 钩子调所有权交接 |
+| `hyper-agent` datastore | 新 backend `fulmar.py`（`SUPPORTED_FS_TYPES` 加 `fulmar`）：mkfs / mount / 快照 / reflink / diff / QoS 全走控制 API；VM 配置文件仍可放 Fulmar（FUSE 路径）或本地 datastore |
+| `hyper-agent` qemu_command | 盘类型 `fulmar` 生成 `-blockdev driver=fulmar,…` 或（零拷贝档）vhost-user-blk；memtier `path` 支持 `fulmar:` |
+| `qemu` | 新增 `block/fulmar.c`、`memtier/backing-fulmar.c`；迁移 `inactivate` 钩子调所有权交接 |
 | `lictor` | 快照 / 迁移流程调用 datastore 接口，不直接碰文件系统（现状若有 `cp --reflink` 直调则替换） |
-| `xvirt-blockdiff` / `xvirt-snapmig` / `cdp` | 可不改（`kfs fiemap` 兼容）；二期切 `kfs diff` 提速 |
-| 资源规划 | `kfsd` 轮询 IO 线程的核与环用 hugepage 从 `spdk` 池划拨（建议改称存储池）；eventfd 模式不占池核。启用 SPDK 档时再加 vfio 绑定与 SPDK 大页 |
-| OCFS2 → KFS 迁移 | 同机加一块 KFS datastore，用现有跨 datastore 快照链迁移（根全量 + 逐层 `merge`）或 drive-mirror 在线迁移；OCFS2 只读保留直至清空 |
+| `xvirt-blockdiff` / `xvirt-snapmig` / `cdp` | 可不改（`fulmar fiemap` 兼容）；二期切 `fulmar diff` 提速 |
+| 资源规划 | `fulmard` 轮询 IO 线程的核与环用 hugepage 从 `spdk` 池划拨（建议改称存储池）；eventfd 模式不占池核。启用 SPDK 档时再加 vfio 绑定与 SPDK 大页 |
+| OCFS2 → Fulmar 迁移 | 同机加一块 Fulmar datastore，用现有跨 datastore 快照链迁移（根全量 + 逐层 `merge`）或 drive-mirror 在线迁移；OCFS2 只读保留直至清空 |
 
 ---
 
@@ -495,11 +495,11 @@ QEMU `block/kfs.c` 把 `block_status` 直接映射给 `bdrv_co_block_status`，�
 11. **Flush 成本**：带易失缓存的 NVMe-oF 后端 `FLUSH` 可能毫秒级；客户机频繁 fsync 的负载要评估"组提交 + 设备 flush 合并"效果；可选 `fua-as-flush` 策略。
 12. **格式版本与在线升级**：超级块 `compat/ro_compat/incompat` 三组特性位；集群内混合版本运行期间禁止启用新 incompat 特性。
 13. **时钟**：心跳只用单调计数与序号，不依赖节点间时间同步；日志中带墙钟仅供排障。
-14. **大页与 NUMA 预算**：`kfsd` 环、bounce 缓冲（SPDK 档还有队列）都吃 hugepage；每 VM 每 iothread 的环大小 × VM 数要纳入资源规划，否则会与 1G 大页 VM 抢内存。
-15. **可观测性**：Prometheus 指标（每文件 / 每节点延迟直方图、节流、心跳抖动、锁等待、journal 占用、延迟释放积压）、结构化事件、`kfs trace` 按文件采样请求级 tracing；心跳抖动本身就是存储健康的先行指标。
+14. **大页与 NUMA 预算**：`fulmard` 环、bounce 缓冲（SPDK 档还有队列）都吃 hugepage；每 VM 每 iothread 的环大小 × VM 数要纳入资源规划，否则会与 1G 大页 VM 抢内存。
+15. **可观测性**：Prometheus 指标（每文件 / 每节点延迟直方图、节流、心跳抖动、锁等待、journal 占用、延迟释放积压）、结构化事件、`fulmar trace` 按文件采样请求级 tracing；心跳抖动本身就是存储健康的先行指标。
 16. **安全边界**：控制 socket 仅 root / 专用组；环内 iov 范围校验；FUSE 网关默认只读；多租户不是目标，但要防误操作（活盘禁止 FUSE 写、删除活盘要求先无所有者）。
 17. **测试基础设施**：崩溃一致性（`dm-flakey` / `dm-dust` 模拟断电与乱序落盘，SPDK 档用故障注入 bdev）、集群故障注入（网络分区、盘心跳延迟、僵尸节点）、xfstests 子集经 FUSE、fio / vdbench 性能回归、与 OCFS2 同机对比基线。
-18. **开发与运维工具链**：`kfs-fsck` 必须与格式同步交付；`kfs dump`（导出元数据树供离线分析）；只读挂载模式；"紧急只读"降级（元数据校验失败时）。
+18. **开发与运维工具链**：`fulmar-fsck` 必须与格式同步交付；`fulmar dump`（导出元数据树供离线分析）；只读挂载模式；"紧急只读"降级（元数据校验失败时）。
 19. **SPDK 档的代价**：vfio 独占整个 NVMe 控制器（同盘不能再分区给 XFS 或裸分区 memtier）、轮询核 100% 占用、多进程模式脆弱（二级进程崩溃可能拖累主进程共享内存）、无 FC 支持。只在低延迟介质 / NVMe-oF / 已预留 SPDK 核的主机上启用；内核 io_uring 路径是永远可退回的基线。
 20. **软件组件替换的组织成本**：QEMU fork 增两个驱动的长期维护；FUSE 路径让已有脚本"看起来还是文件"但性能与语义不同（无 `mmap`、无 `O_DIRECT` 保证），运维脚本需逐一检查。
 
@@ -509,16 +509,16 @@ QEMU `block/kfs.c` 把 `block_status` 直接映射给 `bdrv_co_block_status`，�
 
 > 以下为目标与估算，未实测。基线用同一台机、同一 NVMe 上的裸盘与 OCFS2（raw 文件）对比。
 
-| 场景 | OCFS2（内核，raw） | KFS 目标 | 验证 |
+| 场景 | OCFS2（内核，raw） | Fulmar 目标 | 验证 |
 |---|---|---|---|
-| 4K 随机读延迟（QD1） | 裸盘 + 10–20µs | 裸盘 + ≤ 8µs（环 + io_uring 轮询）/ ≈ 裸盘（直通）/ 裸盘 + ≤ 5µs（SPDK 档） | fio in-guest，`cache=none` vs `kfs` |
+| 4K 随机读延迟（QD1） | 裸盘 + 10–20µs | 裸盘 + ≤ 8µs（环 + io_uring 轮询）/ ≈ 裸盘（直通）/ 裸盘 + ≤ 5µs（SPDK 档） | fio in-guest，`cache=none` vs `fulmar` |
 | 4K 随机写延迟，快照后首写 | 1–3ms（1MB cluster RMW + refcount 更新） | 裸盘 4K 写 + ≤ 10µs | 建快照后立即 fio randwrite |
 | 顺序读写吞吐（1MB） | ≈ 裸盘 | ≥ 95% 裸盘 | fio seq |
-| reflink 1TB、1M extent | 数十秒到分钟 | ≤ 10ms | `kfs snap` 计时 |
+| reflink 1TB、1M extent | 数十秒到分钟 | ≤ 10ms | `fulmar snap` 计时 |
 | 删快照（1TB） | 秒到分钟级前台 | 前台 ≤ 10ms，后台回收不影响前台 P99 | 删除期间 fio P99 |
 | memtier 换入 4K | 走裸分区 ≈ 裸盘 | ≈ 裸盘（直通）/ +≤5µs（环） | 现有 `tests/` redis 基准 + `evict-reevict` |
 | 节点故障到接管 | ≈ 62s（默认 o2cb） | ≤ 10s | 拔网线 / 拉黑 LUN |
-| 快照差异（1TB，1% 变化） | FIEMAP 全扫（分钟级） | 秒级 | `kfs diff` vs `xvirt-blockdiff diff` |
+| 快照差异（1TB，1% 变化） | FIEMAP 全扫（分钟级） | 秒级 | `fulmar diff` vs `xvirt-blockdiff diff` |
 
 ---
 
@@ -526,8 +526,8 @@ QEMU `block/kfs.c` 把 `block_status` 直接映射给 `bdrv_co_block_status`，�
 
 | 阶段 | 内容 | 退出标准 |
 |---|---|---|
-| **P0 原型（本地模式）** | 盘上格式 v0、COW 树、ROW 写、reflink O(1)、`uring` 裸盘后端、`kfsd` + 环 + `libkfs` + QEMU `block/kfs.c`、`kfs` CLI 基本命令、FUSE 只读 | 单机 VM 能启动、快照、回滚；崩溃一致性测试通过；延迟目标达 80% |
-| **P1 memtier + 工具链** | `pinned` 类、`backing-kfs.c`（fd 直通 + 环模式回退）、`kfs diff/fiemap`、hyper-agent `kfs` datastore、QoS 令牌桶、合并器 | memtier 基准与裸分区后端持平（同一 io_uring 路径）；blockdiff 流程不改即可跑；OCFS2 → KFS 迁移演练 |
+| **P0 原型（本地模式）** | 盘上格式 v0、COW 树、ROW 写、reflink O(1)、`uring` 裸盘后端、`fulmard` + 环 + `libfulmar` + QEMU `block/fulmar.c`、`fulmar` CLI 基本命令、FUSE 只读 | 单机 VM 能启动、快照、回滚；崩溃一致性测试通过；延迟目标达 80% |
+| **P1 memtier + 工具链** | `pinned` 类、`backing-fulmar.c`（fd 直通 + 环模式回退）、`fulmar diff/fiemap`、hyper-agent `fulmar` datastore、QoS 令牌桶、合并器 | memtier 基准与裸分区后端持平（同一 io_uring 路径）；blockdiff 流程不改即可跑；OCFS2 → Fulmar 迁移演练 |
 | **P2 性能档（可选）** | vhost-user-blk 零拷贝档（rust-vmm）、io_uring IOPOLL / SQPOLL / 固定缓冲调优、`spdk` 后端（nvme / nvmf bdev）作为可开关特性、SPDK 二级进程直通评估 | `uring` 档延迟目标达成；`spdk` 档在低延迟介质 / NVMe-oF 上给出实测收益表，决定是否纳入默认部署 |
 | **P3 集群** | 成员 / 双心跳 / ATS 锁 / DLM / AG 租约 / inode 所有权 / 迁移交接 / 自 fence / PR 抢占 / journal 恢复 | 故障注入矩阵通过；接管 ≤ 10s；`memtier-shared-backing` 跨节点迁移验证 |
 | **P4 运维成熟** | fsck / scrub / 在线扩容 / 指标 / 版本升级 / 文档 | 生产灰度 |
@@ -539,17 +539,16 @@ QEMU `block/kfs.c` 把 `block_status` 直接映射给 `bdrv_co_block_status`，�
 | COW 文件系统的引用计数与 ENOSPC 正确性 | 模型级单测（随机操作序列 + 全量重算校验）、持续模糊测试、fsck 从 P0 就有 |
 | SPDK 档带来运维复杂度与稳定性风险 | 默认不启用；内核 io_uring 路径永远可用，SPDK 作为按主机开关的特性 |
 | 阵列 ATS / PR 支持缺失 | 能力探测 + 时序兜底 + 明确的"不支持则拒绝集群挂载"策略 |
-| QEMU fork 维护面扩大 | 驱动保持薄（协议在 libkfs 内），对上游 QEMU 版本变化敏感面小 |
+| QEMU fork 维护面扩大 | 驱动保持薄（协议在 libfulmar 内），对上游 QEMU 版本变化敏感面小 |
 | 实现语言与团队栈 | 见 §17 |
 
 ---
 
 ## 十七、待拍板事项
 
-1. **实现语言**：Rust（与 petrel 同栈，直接复用其 io_uring / vhost-user-blk / rust-vmm 代码）vs C（与 QEMU、SPDK 同栈）。建议：`kfsd` 用 Rust，块后端抽象先只实现 `uring`；`spdk` 档通过薄 FFI（bdev 提交 / 完成、CAW、reservation 几个接口）后接；`libkfs` 提供 C ABI 给 QEMU。
+1. **实现语言**：Rust（与 petrel 同栈，直接复用其 io_uring / vhost-user-blk / rust-vmm 代码）vs C（与 QEMU、SPDK 同栈）。建议：`fulmard` 用 Rust，块后端抽象先只实现 `uring`；`spdk` 档通过薄 FFI（bdev 提交 / 完成、CAW、reservation 几个接口）后接；`libfulmar` 提供 C ABI 给 QEMU。
 2. **默认 `cow_chunk`**：NVMe 上 4K 还是 16K 起步（后者 extent 数少 4 倍，代价是最多 3 个 4K 补齐读）。建议 `auto`，初值按介质。
 3. **是否保留 FUSE 可写**：建议仅非活盘、非 pinned 文件可写。
 4. **集群规模上限**：64 槽（心跳区 256KB）是否够；OCFS2 为 255。
 5. **memtier 直通是否作为 P1 默认**：fd 直通与现有裸分区后端同一条路径、风险低，建议 P1 即默认，环模式作回退。
 6. **SPDK 档是否进入本期范围**：建议只做后端抽象预留与 P2 实测评估，不作为交付承诺。
-7. **名字**。
