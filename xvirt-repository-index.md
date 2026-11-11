@@ -29,13 +29,13 @@ ferrostack 自己跟踪的内容：
 
 | 目录 | 状态 | 去向 |
 |---|---|---|
-| `cdp-worker` | 已并入 `cdp` | → `cdp/recorder/`（原 `worker/`，现 `cdp-recorder`，保留 `cdpwork` 软链接）；`docs/io-redirection.md` → `cdp/docs/qemu-cdp.md`。目录仅作历史，停在 2026-02 |
+| `cdp-worker` | 已并入 `cdp` | → `cdp/recorder/`（原 `worker/`，现 `cdp-recorder`，保留 `cdpwork` 软链接）；`docs/io-redirection.md` → `cdp/docs/qemu-cdp.md`。**2026-11-11 已从本工作区移除**（连同 `cdp-worker.tar.gz`）；历史在 GitHub `liu-weifeng/cdp-worker`（已归档，含本地最后提交 `624a01f`） |
 | `xbackup-tools` | 已并入 `cdp` | → `cdp/tools/xbackup/`（本工作区无此目录） |
 | `xvirt-libs` | 疑似已被 `cdp/common` 吸收 | `cdp/common/` 含同名 bitmap/xxhash 源（内容已分叉，未逐行核对）；停在 2026-01 |
 | `virt-control` | 废弃 | 被 `ferrovirt` 取代，不再启动，仅作历史参考 |
 | `krait` | 旧方案 | 旧 Rocky/Anaconda 向导，新装机走 `lycan` + `fledge` |
 | `xdesk-client` | 从 qemu/xvirt 抽出 | 2026-07-19 独立成仓 |
-| `qemu-patches/`、`*.tar.gz` | 旧导出物 | 基于 QEMU v10.0.7 的补丁导出与旧打包，当前 qemu 在 11.1，勿当现行源码 |
+| `qemu-patches/`、`qemu-patches.tar.gz`、`resource-planning.tar.gz` | 2026-11-11 已删除 | 前两个是基于 QEMU v10.0.7 的旧补丁导出（未入库，无其他副本）；后一个是 `docs/`、`demo/` 对应文件的旧打包，仍可从本仓历史取回 |
 
 ## 1. 仓库地址规则
 
@@ -48,7 +48,7 @@ git@kairos.xve-vt.com:local/<repo>.git        # remote 名 kairos
 说明：
 
 - 本地各仓库只保留 `kairos` remote（`qemu` 另有 `upstream` 指向 QEMU 官方上游）；旧内网 `ssh://git@192.168.60.105:2222/liuwfng/<repo>.git` 与 GitHub `liu-weifeng/<repo>` 不再配置。
-- legacy 仓库（`cdp-worker`、`xvirt-libs`、`krait`、`virt-control`）未迁到 kairos，仍保留旧内网 `origin`；`spdk-analysis` 的 `origin` 为上游 SPDK。
+- legacy 仓库（`xvirt-libs`、`krait`、`virt-control`）未迁到 kairos，仍保留旧内网 `origin`（2026-11-11 核对：这三个仓库的本地提交 GitHub 上没有或不全，本地是唯一完整副本，勿删；`cdp-worker` 已移除，见上表）；`spdk-analysis` 的 `origin` 为上游 SPDK。
 - 各表中的「当前路径 / 分支 / 当前 HEAD」仍是 2026-07 旧工作区的历史记录，以工作区实际状态为准。
 
 ## 2. 核心平台仓库
@@ -71,8 +71,8 @@ git@kairos.xve-vt.com:local/<repo>.git        # remote 名 kairos
 | fulmar | `/root/work/ferrostack/fulmar` | main | `f76e2fc` | Rust 用户态共享盘文件系统（替代 OCFS2）：本地模式 mkfs/fulmard/libfulmar/CLI/fsck 链路齐全，设计见 docs/fulmar-design.md，未编译 | `git@kairos.xve-vt.com:local/fulmar.git` |
 | aegis-sdk | `/root/code/xvirt/aegis-sdk` | main | `ac0c5f0` | C VDDK-like 备份 SDK，`libaegisdisk.so`、`aegis-cbt`、CBT 读盘 | `git@kairos.xve-vt.com:local/aegis-sdk.git` |
 | cdp-agent | `/root/code/xvirt/cdp-agent` | main | `498f026` | guest 内 CDP：Rust agent + Linux/Windows capture driver + cdp-sink | `git@kairos.xve-vt.com:local/cdp-agent.git` |
-| cdp-worker | `/root/code/xvirt/cdp-worker` | main | `624a01f` | **[已并入 cdp → cdp/recorder/，仅作历史]** 旧 CDP worker，IO 日志、索引、位图与降级模型 | 未迁移（仅旧内网 origin） |
-| cdp | `/root/work/ferrostack/cdp` | main | `3931f8c` | 现行 CDP 实现（CMake：common/plugins/tools/recorder/tests），由 cdp、cdp-worker、xbackup-tools 合并而来；`cdp-recorder`（原 cdpwork）数据面，format-v2 格式；QEMU 侧 QMP 为 `cdp-*`；日志引擎设计稿 `docs/log-engine.md`，P0 Rust 骨架 `cdplog/`（未编译未测试） | `git@kairos.xve-vt.com:local/cdp.git` |
+| cdp-worker | `/root/code/xvirt/cdp-worker` | main | `624a01f` | **[已并入 cdp → cdp/recorder/；2026-11-11 已从工作区移除，历史见 GitHub `liu-weifeng/cdp-worker`]** 旧 CDP worker，IO 日志、索引、位图与降级模型 | GitHub `liu-weifeng/cdp-worker`（已归档） |
+| cdp | `/root/work/ferrostack/cdp` | main | `a7fae95` | 现行 CDP 实现（CMake：common/plugins/tools/recorder/tests），由 cdp、cdp-worker、xbackup-tools 合并而来；`cdp-recorder`（原 cdpwork）数据面，format-v2 格式；QEMU 侧 QMP 为 `cdp-*`；日志引擎设计稿 `docs/log-engine.md`，P0 Rust 骨架 `cdplog/`（未编译未测试） | `git@kairos.xve-vt.com:local/cdp.git` |
 | snapshot-helper | `/root/code/xvirt/snapshot-helper` | main | `6ab1a4f` | QEMU 内存快照 helper，将追加迁移流改为稀疏页覆写文件 | `git@kairos.xve-vt.com:local/snapshot-helper.git` |
 | xvirt-snapmig | `/root/code/xvirt/xvirt-snapmig` | main | `805411e` | 跨存储 snapshot chain 迁移工具/数据路径 | `git@kairos.xve-vt.com:local/xvirt-snapmig.git` |
 | xvirt-blockdiff | `/root/code/xvirt/xvirt-blockdiff` | main | `0b4c8da` | 块级 diff / xvdiff 相关工具，用于 petrel/OCFS2 snapshot-chain interop | `git@kairos.xve-vt.com:local/xvirt-blockdiff.git` |
@@ -143,7 +143,7 @@ git@kairos.xve-vt.com:local/<repo>.git        # remote 名 kairos
 
 - `virt-control`：旧 Java 控制面，已废弃。
 - `krait`：旧 Rocky/Anaconda 安装路线，仍有历史资料价值。
-- `cdp-worker`：已并入 `cdp/recorder/`，目录仅作历史。
+- `cdp-worker`：已并入 `cdp/recorder/`，2026-11-11 已从工作区移除（GitHub 有归档）。
 - `xvirt-libs`：疑似已被 `cdp/common` 吸收。
 
 ## 7. clone 示例（kairos）
