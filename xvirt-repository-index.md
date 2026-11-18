@@ -55,7 +55,7 @@ git@kairos.xve-vt.com:local/<repo>.git        # remote 名 kairos
 
 | 仓库 | 当前路径 | 分支 | 当前 HEAD | 职责 | kairos 地址 |
 |---|---|---:|---:|---|---|---|
-| xvirt | `/root/code/xvirt` | main | `4b09dac` | 集成仓（子仓，顶层为 ferrostack）：CLAUDE.md 组件表、xvirtctl、cicd、nginx、monitoring、打包部署 | `git@kairos.xve-vt.com:local/xvirt.git` |
+| xvirt | `/root/code/xvirt` | main | `8267653` | 集成仓（子仓，顶层为 ferrostack）：CLAUDE.md 组件表、xvirtctl、cicd、nginx、monitoring、打包部署 | `git@kairos.xve-vt.com:local/xvirt.git` |
 | ferrovirt | `/root/code/xvirt/ferrovirt` | main | `b1f3466` | Rust 控制面：REST/WS、任务、DB owner、资源模型、agent 编排 | `git@kairos.xve-vt.com:local/ferrovirt.git` |
 | xvirt-client | `/root/code/xvirt/xvirt-client` | main | `47df377` | React/Vite Web 控制台，center/standalone 双角色 UI | `git@kairos.xve-vt.com:local/xvirt-client.git` |
 | hyper-agent | `/root/code/xvirt/hyper-agent` | main | `a779104` | Python 宿主机 agent：存储/网络/硬件/文件/petrel/memtier，VM 类 action 转 lictor | `git@kairos.xve-vt.com:local/hyper-agent.git` |
@@ -86,8 +86,8 @@ git@kairos.xve-vt.com:local/<repo>.git        # remote 名 kairos
 |---|---|---:|---:|---|---|---|
 | build-deb | `/root/code/xvirt/build-deb` | main | `f5156a5` | QEMU deb 打包，含 epoch、OVMF descriptor、`/usr/libexec/qemu-kvm` 等修复 | `git@kairos.xve-vt.com:local/build-deb.git` |
 | xvirt-autotest | `/root/code/xvirt/xvirt-autotest` | main | `14910a4` | Python stdlib 自动化测试框架：PXE、center、storage、network、VM、hotplug | `git@kairos.xve-vt.com:local/xvirt-autotest.git` |
-| fledge | `/root/code/xvirt/fledge` | main | `6ed351c` | PXE provisioning 服务，按 MAC/角色/磁盘自动装机 | `git@kairos.xve-vt.com:local/fledge.git` |
-| lycan | `/root/code/xvirt/lycan` | master | `947749a` | Ubuntu 26.04 autoinstall ISO 构建器，standalone/management 自动应答 | `git@kairos.xve-vt.com:local/lycan.git` |
+| fledge | `/root/code/xvirt/fledge` | main | `e8be210` | PXE/iPXE 自动装机服务 2.0：按 MAC 静态 IP/VLAN/磁盘/角色无人值守装机、未知 MAC 交互引导菜单、实时进度回调与防重装解锁 | `git@kairos.xve-vt.com:local/fledge.git` |
+| lycan | `/root/code/xvirt/lycan` | master | `0ff22b6` | Ubuntu 26.04 安装器 2.0：ESXi/Subiquity 风格 Curses TUI、网络(VLAN/MTU/Bond)/磁盘选型与可视化分区/账号与 SSH 密钥、PXE 与自动应答 | `git@kairos.xve-vt.com:local/lycan.git` |
 | krait | `/root/code/xvirt/krait` | main | `6d8822c` | **[legacy]** 旧 Rocky/Anaconda 安装向导 UI 与 ISO 集成，已被 lycan + fledge 取代 | `git@kairos.xve-vt.com:local/krait.git` |
 
 ## 5. Guest、旧控制面与历史仓库
