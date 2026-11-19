@@ -62,7 +62,7 @@ git@kairos.xve-vt.com:local/<repo>.git        # remote 名 kairos
 | lictor | `/root/code/xvirt/lictor` | main | `2daa170` | Python QMP owner：VM 生命周期、快照、迁移、热插拔、console、xvirt-tools | `git@kairos.xve-vt.com:local/lictor.git` |
 | concilium | `/root/code/xvirt/concilium` | main | `7019d54` | C 集群资源管理，驱动 xvirt-vm RA 到 lictor | `git@kairos.xve-vt.com:local/concilium.git` |
 | qemu | `/root/code/xvirt/qemu` | stable-11.1-dev | `f10e49dac5` | 自研 QEMU fork：CBT bitmap、memtier、迁移、vhost/petrel 相关改造 | `git@kairos.xve-vt.com:local/qemu.git` |
-| kestrel | `/root/work/ferrostack/kestrel` | main | `e57529a` | Rust 推送式轻量监控框架（拟替代 VictoriaMetrics + exporter）：kestreld 服务端（单线程 epoll，只依赖 libc）、多对象共用的顺序追加段存储、突发片段、Rust / Python / C 三种 SDK；设计见 docs/kestrel-design.md v1.2；2026-11-19 在 10.8.1.195 上编译、49 个测试、端到端、1 万对象规模测试都跑过（实测见设计稿 §12.1） | `git@kairos.xve-vt.com:local/kestrel.git` |
+| kestrel | `/root/work/ferrostack/kestrel` | main | `e57529a` | Rust 推送式轻量监控框架（拟替代 VictoriaMetrics + exporter）：kestreld 服务端（epoll 主线程 + 同步、封存两个辅助线程，只依赖 libc）、多对象共用的顺序追加段存储、突发片段、Rust / Python / C 三种 SDK；设计见 docs/kestrel-design.md v1.3；2026-11-19 在 10.8.1.195 上编译、50 个测试、端到端、1 万对象规模测试、长范围查询测试都跑过（实测见设计稿 §12.1、§12.2） | `git@kairos.xve-vt.com:local/kestrel.git` |
 
 ## 3. 存储、快照、备份与数据面仓库
 
