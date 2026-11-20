@@ -32,7 +32,7 @@ ferrostack 自己跟踪的内容：
 | `virt-control` | 废弃 | 被 `ferrovirt` 取代。2026-11-11 从工作区移除；历史在 GitHub `liu-weifeng/virt-control` |
 | `krait` | legacy | 旧 Rocky/Anaconda 安装向导，新装机走 `lycan` + `fledge`。仍保留在工作区，已迁到 kairos |
 | `xdesk-client` | 从 qemu 抽出 | 2026-07-19 独立成仓 |
-| `qemu-patches/`、`qemu-patches.tar.gz`、`resource-planning.tar.gz` | 2026-11-11 已删除 | 前两个是基于 QEMU v10.0.7 的旧补丁导出（未入库，无其他副本，可能含 CBT bitmap export/import，见 §9）；后一个可从本仓历史取回 |
+| `qemu-patches/`、`qemu-patches.tar.gz`、`resource-planning.tar.gz` | 2026-11-11 已删除 | 前两个是基于 QEMU v10.0.7 的旧补丁导出（未入库，无其他副本；可能含 CBT bitmap export/import，该功能已在 11.1 上重写，见 §2.1）；后一个可从本仓历史取回 |
 
 ## 1. 仓库地址规则
 
@@ -59,14 +59,15 @@ git@kairos.xve-vt.com:local/<repo>.git
 | hyper-agent | main | `e80ec6d` | 11-09 | Python 宿主机 agent：存储/网络/硬件/文件/petrel；资源规划 apply 与放置控制器；memtier 总控与 NVMe 写入预算；VM 类 action 转 lictor 或 concilium |
 | lictor | main | `317ee3d` | 11-09 | Python QMP owner：VM 生命周期、快照（含内存分层快照 keep/merge）、迁移、热插拔、xvirt-tools；systemd scope 与绑核 |
 | concilium | main | `4eeea1e` | 11-09 | C 集群资源管理：gossip :7700、选主、HA、self-fence + STONITH，驱动 `xvirt-vm` RA 到 lictor；迁移 RA 仍是桩 |
-| qemu | stable-11.1-dev（当前检出 memtier-heat） | kairos `f10e49dac5` | 11-10 | 自研 QEMU fork，基线 11.1.1。memtier 全套（含热度直方图、swap-cache）、CDP io-redirection、热度 pre-copy 迁移、ram-layout、qcow2 在线缩盘、xdesk。分支见 §2.1 |
+| qemu | stable-11.1-dev（当前检出 memtier-heat） | kairos `b63be76397` | 11-20 | 自研 QEMU fork，基线 11.1.1。memtier 全套（含热度直方图、swap-cache）、CDP io-redirection、CBT 位图导出/导入、热度 pre-copy 迁移、ram-layout、qcow2 在线缩盘、xdesk。分支见 §2.1 |
 | kestrel | main | `912e7c6` | 11-19 | Rust 推送式轻量监控框架（拟替代 VictoriaMetrics + exporter）：kestreld + Rust/Python/C SDK，按类别保留、突发片段永久保留；设计见 `docs/kestrel-design.md` v1.5；2026-11-19 在 10.8.1.195 上编译、57 个测试、端到端都过；尚无生产组件接入 |
 
 ### 2.1 qemu 分支
 
 | 分支 | kairos | 内容 | 状态 |
 |---|---|---|---|
-| `stable-11.1-dev` | `f10e49dac5` | 默认分支。2026-09-27 从 `upstream/stable-11.1` 建出并 cherry-pick 全部自研改动，2026-11-10 合入 memtier-stats + memtier-heat | 产品线，`build-deb` 打这个分支。**本地同名分支（`424651e`）是旧的分叉副本，不要推它**，合并以 `kairos/stable-11.1-dev` 为准 |
+| `stable-11.1-dev` | `b63be76397` | 默认分支。2026-09-27 从 `upstream/stable-11.1` 建出并 cherry-pick 全部自研改动，2026-11-10 合入 memtier-stats + memtier-heat，2026-11-20 合入 CBT 位图导出/导入（squash） | 产品线，`build-deb` 打这个分支。**本地同名分支（`424651e`）是旧的分叉副本，不要推它**，合并以 `kairos/stable-11.1-dev` 为准 |
+| `cbt-bitmap-11.1` | `35405940f0` | CBT 位图导出/导入在 11.1 上的重写过程（1 个主提交 + 6 个 fixup） | 已压成 `b63be76397` 合入，可删 |
 | `memtier-stats` | 有 | 写盘统计、零页不落盘、swap-cache、分块日志打洞/压实、`resident-cold-bytes` | 已合入 |
 | `memtier-heat` | `d9cff878a1` | `x-memtier-query-heat` 热度直方图、抽样扫描、先探测 page_idle 再回退 write-aging | 已合入；本地当前检出 |
 | `cdp-rename` | `3ef92ae` | QMP `io-redirection-*` 改名为 `cdp-*`，并修写钩子范围、写零、fifo、阻塞模式 | **未合入、未编译** |
@@ -186,7 +187,7 @@ done
 
 ## 9. 需要后续核对或处理的点
 
-- **qemu CBT bitmap export/import 已确认缺失**（2026-11-20 核实）：kairos 上 qemu 的全部 9 个分支都没有这组命令，原实现提交 `1f5bbc160f`（旧工作区 `stable-10.0-dev`）没在重新导入时带过来，195 和 GitHub 上也没有。待从开发机本地 qemu 仓（`git -C qemu cat-file -t 1f5bbc160f`）或 60.112 `/root/code/xvirt/qemu` 找回并推到 kairos，再移植到 `stable-11.1-dev`；找不回就按 `xvirt/CBT_BITMAP_PERSISTENCE_SPEC.md` 重写（见 `xvirt-architecture.md` §11.1、§19）。
+- **qemu CBT bitmap export/import 是 11.1 重写版，待真 VM 验证**：10.0 原实现 `1f5bbc160f` 没进 kairos，开发机、195、GitHub 上都找不到；2026-11-20 按 `xvirt/CBT_BITMAP_PERSISTENCE_SPEC.md` 重写并合入 `stable-11.1-dev`（`b63be76397`），iotests 和调用方兼容测试都过了。出包前还要经 lictor 在真 VM 上验证（见 `xvirt-architecture.md` §11.1、§19）。
 - **qemu `cdp-rename` 未合入**：产品线 QMP 仍是 `io-redirection-*`，cdp 仓 `tests/vm` 已改用新名，两边版本要配套。
 - **kestrel 旧分支**：`wip/async-query`、`wip/class-retention`（内容已压成 `099b07a`、`912e7c6` 合进 main）已于 2026-11-20 从 kairos 和测试机 195 删除；开发机本地 kestrel 仓里的同名分支待清理（`git -C kestrel branch -D wip/async-query wip/class-retention && git -C kestrel fetch --prune kairos`）。
 - **fulmar 从未 fetch**（只推过），本地即为最新提交；首次在测试机上编译前先确认 kairos 上没有别处的改动。

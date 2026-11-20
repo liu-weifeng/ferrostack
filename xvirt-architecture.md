@@ -94,7 +94,7 @@ center 纳管主机时连的是主机上的 ferrovirt（5570/5571），所以实
 | concilium | C daemon | 集群资源管理：选主、HA 故障转移、self-fence + IPMI STONITH，驱动 `xvirt-vm` RA 到 lictor | `/run/conciliumd.sock`，gossip :7700 |
 | petrel | Rust | 分布式块存储（副本 / EC、按设备类分池），块卷经 vhost-user-blk 或 ublk 给 VM；由 hyper-agent reconcile | mon :6790，osd :6800–6820 |
 | fulmar | Rust（libfulmar 为 C ABI） | 用户态共享盘文件系统，替代 OCFS2 做共享 datastore；COW + O(1) reflink 快照，本地/集群同格式 | `fulmard` 控制 socket，`fulmar:` 块驱动；见 §8.1 |
-| QEMU | C，自研 fork，基线 11.1.1 | 虚拟化底座：memtier、CDP 采集、热度 pre-copy 迁移、qcow2 在线缩盘、xdesk 显示后端 | 分支 `stable-11.1-dev` |
+| QEMU | C，自研 fork，基线 11.1.1 | 虚拟化底座：memtier、CDP 采集、CBT 位图导出/导入、热度 pre-copy 迁移、qcow2 在线缩盘、xdesk 显示后端 | 分支 `stable-11.1-dev` |
 | xvirt-tools | Go | guest VM 内 daemon，经 virtio-serial 与 host 通信 | guest 内服务 |
 | aegis-sdk | C library + CLI | 类 VDDK 的备份 SDK，提供磁盘读写和 CBT | `libaegisdisk.so`、`aegis-cbt` |
 | cdp | C + Rust | 现行 CDP：`cdp-recorder` 记录 QEMU 侧采集的写，`cdplog` 日志引擎（ublk / nbdkit / 搬运服务） | 见 §14 |
@@ -335,7 +335,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 
 备份数据面围绕"创建快照/freeze → 导出 dirty bitmap → 按位图读静止镜像"展开，明确不用 QMP `drive-backup`，因为离线 VM 没有 QEMU 进程。
 
-- QEMU 自研 `block-dirty-bitmap-export/import`，导出 QEMUBMP 位图文件（**当前 kairos 上所有 qemu 分支都没有这组命令**，见下方风险）。
+- QEMU 自研 `block-dirty-bitmap-export/import`，导出 QEMUBMP 位图文件（11.1 上为 2026-11 的重写版，见下方说明）。
 - 在线 VM：lictor 执行 `stop → export → clear → cont`，同一窗口内 reflink 出静止副本。
 - 离线 VM：hyper-agent 通过 `qemu-storage-daemon` / `qemu-img` 导出位图。
 - change-point 持久化到 ferrovirt DB 的 `vm_snapshot` / `vm_snapshot_disk`。
@@ -345,12 +345,15 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 
 未完成：xvirt 自带的 BackupService 和 `aegis_change_point` 表。
 
-**已确认缺失（2026-11-20 核实）**：kairos 上 qemu 的全部 9 个分支（含 `stable-11.1-dev` `f10e49dac5` 和 `stable-10.0-dev` `8b469b20ef`）都没有 `block-dirty-bitmap-export/import`，`block/monitor/bitmap-qmp-cmds.c` 是上游原样。
+**11.1 上的实现（2026-11-20 重写，`stable-11.1-dev` `b63be76397`）**：
 
-- 原实现在旧工作区 qemu 的提交 `1f5bbc160f`（`stable-10.0-dev`，含 import 持久化，见 `xvirt/CLAUDE.md`、`aegis-sdk/docs/local-cbt-backup.md`），2026-11-09 重新导入 kairos 时没带过去。
-- 测试机 195 的对象库和 GitHub 上也找不到这个提交。可能还留着它的地方：开发机本地 qemu 仓的 pack 文件，或 60.112 的 `/root/code/xvirt/qemu`。
-- 影响：lictor `support/cbt.py` 和 hyper-agent `support/cbt_bitmap.py` 都调用这组命令。按现在的 `stable-11.1-dev` 出包部署后，在线/离线 CBT 导出和启动时导入空白位图复位都会失败，aegis-sdk 增量备份链路不可用。
-- 处理：先找回 `1f5bbc160f` 推到 kairos，再移植到 `stable-11.1-dev`；找不回就按 `xvirt/CBT_BITMAP_PERSISTENCE_SPEC.md` 重写，用 aegis-cbt / hyper-agent 里的 QEMUBMP v1 解析代码做字节级对照。
+- 来历：原实现是旧工作区 qemu 的提交 `1f5bbc160f` / `07e367520f`（10.0），重新导入 kairos 时丢失，升级到 11.1 时也没带上，从开发机、195 和 GitHub 都没能找回。现按 `xvirt/CBT_BITMAP_PERSISTENCE_SPEC.md` 在 11.1 上重写。命令名和 QEMUBMP v1 格式与 lictor、hyper-agent、aegis-sdk 现有代码一致。
+- 代码在 `block/monitor/bitmap-file.c`，qemu-storage-daemon 里同样可用：
+  - `block-dirty-bitmap-export {node, name, filename}`：先在内存里复制位图，再写 `<filename>.tmp`（0640），fdatasync 后改名；失败时删掉临时文件。
+  - `block-dirty-bitmap-import {node, filename, persistent?}`：先完整校验文件（头、长度、CRC32C），再在节点上建位图。盘大小不符或同名位图已存在都返回错误；导入期间的新写入不会丢。`persistent` 默认按节点能否存持久位图决定（qcow2 存，raw 不存）。
+- drive-mirror 完成后，源节点的有名位图会复制到目标节点（不持久化），存储迁移后 CBT 链不断。外部快照不复制，保持上游语义（iotest 260）。
+- 没照搬规范的：迁移节点名兜底（用上游 `block-bitmap-mapping`）、带时间戳日志函数（用 `-msg timestamp=on`）、`qemu-img parsebitmap`（由 aegis-cbt 覆盖）。
+- 验证（195）：新 iotest `tests/xvirt-cbt-bitmap-file` 8 例、位图/mirror/快照/备份/迁移相关的上游 iotests 35 个、qcow2 auto 组都通过。hyper-agent 用 qemu-storage-daemon 离线导出导入、aegis-cbt 的 verify/blank/merge、lictor `test_qemubmp` 也都对这个版本测过。**还没经 lictor 在真 VM 上做端到端验证**（运行中导出、开机导入空白位图复位）。
 
 ### 11.2 内存快照
 
@@ -644,7 +647,7 @@ fulmard 不占 TCP 端口：控制 API 走本机 unix socket，数据走共享�
 
 仍存在或新发现的：
 
-- **CBT 位图导出/导入已确认缺失**（2026-11-20）：kairos 上全部 qemu 分支都没有 `block-dirty-bitmap-export/import`，原实现提交 `1f5bbc160f` 没进 kairos；lictor 和 hyper-agent 依赖它，按现在的 `stable-11.1-dev` 出包会让 CBT 备份链路失效。需先从开发机本地 qemu 仓或 60.112 旧工作区找回，再移植到 11.1（§11.1）。
+- **CBT 位图导出/导入是重写版，缺真 VM 验证**：10.0 的原实现丢失，2026-11-20 在 11.1 上重写并合入 `stable-11.1-dev`（`b63be76397`），iotests 和调用方兼容测试都过了。出包部署前还要经 lictor 在真 VM 上走一遍运行中导出和开机复位（§11.1）。
 - **文档代际差异更大了**：`xvirt/README.md`、`PACKAGING.md`、`cicd/`、`PIPELINES.md`、`build-deb-xvirt/README.md` 仍是 virt-control / RPM 口径；`xvirt/CLAUDE.md` 还引用已不存在的 `virt-control/` 代码，"VM state 对账未做""仍打 Java virt-control"这两句也已过时；`build-deb/README.md` 写"无 epoch"与脚本矛盾；`aegis-sdk/README.md` 的已知限制没更新。
 - **监控口径不一致**：现行是 VictoriaMetrics，deb 和 xvirt-init 是 Prometheus，VictoriaMetrics 栈没打包。切 kestrel 前要先定口径。
 - **xvirt-client deb 可能打不出来**：`build-deb-xvirt/packages/` 下没有 `xvirt-client`，而打包脚本会处理它的 `control.in`（读代码推断，未实际构建）。
