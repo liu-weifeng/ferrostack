@@ -32,7 +32,7 @@ ferrostack 自己跟踪的内容：
 | `virt-control` | 废弃 | 被 `ferrovirt` 取代。2026-11-11 从工作区移除；历史在 GitHub `liu-weifeng/virt-control` |
 | `krait` | legacy | 旧 Rocky/Anaconda 安装向导，新装机走 `lycan` + `fledge`。仍保留在工作区，已迁到 kairos |
 | `xdesk-client` | 从 qemu 抽出 | 2026-07-19 独立成仓 |
-| `qemu-patches/`、`qemu-patches.tar.gz`、`resource-planning.tar.gz` | 2026-11-11 已删除 | 前两个是基于 QEMU v10.0.7 的旧补丁导出（未入库，无其他副本，其中含 CBT bitmap export/import，见 §9）；后一个可从本仓历史取回 |
+| `qemu-patches/`、`qemu-patches.tar.gz`、`resource-planning.tar.gz` | 2026-11-11 已删除 | 前两个是基于 QEMU v10.0.7 的旧补丁导出（未入库，无其他副本，可能含 CBT bitmap export/import，见 §9）；后一个可从本仓历史取回 |
 
 ## 1. 仓库地址规则
 
@@ -186,7 +186,7 @@ done
 
 ## 9. 需要后续核对或处理的点
 
-- **qemu CBT bitmap export/import 是否已移植到 11.1**：当前 11.1 树里没找到，lictor / hyper-agent 依赖它；旧的 10.0.7 补丁导出已删除，只剩 `xvirt/CBT_BITMAP_PERSISTENCE_SPEC.md` 和 kairos 上的 10.0 分支（见 `xvirt-architecture.md` §11.1、§19）。
+- **qemu CBT bitmap export/import 已确认缺失**（2026-11-20 核实）：kairos 上 qemu 的全部 9 个分支都没有这组命令，原实现提交 `1f5bbc160f`（旧工作区 `stable-10.0-dev`）没在重新导入时带过来，195 和 GitHub 上也没有。待从开发机本地 qemu 仓（`git -C qemu cat-file -t 1f5bbc160f`）或 60.112 `/root/code/xvirt/qemu` 找回并推到 kairos，再移植到 `stable-11.1-dev`；找不回就按 `xvirt/CBT_BITMAP_PERSISTENCE_SPEC.md` 重写（见 `xvirt-architecture.md` §11.1、§19）。
 - **qemu `cdp-rename` 未合入**：产品线 QMP 仍是 `io-redirection-*`，cdp 仓 `tests/vm` 已改用新名，两边版本要配套。
 - **kestrel 旧分支**：`wip/async-query`、`wip/class-retention`（内容已压成 `099b07a`、`912e7c6` 合进 main）已于 2026-11-20 从 kairos 和测试机 195 删除；开发机本地 kestrel 仓里的同名分支待清理（`git -C kestrel branch -D wip/async-query wip/class-retention && git -C kestrel fetch --prune kairos`）。
 - **fulmar 从未 fetch**（只推过），本地即为最新提交；首次在测试机上编译前先确认 kairos 上没有别处的改动。

@@ -335,7 +335,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 
 备份数据面围绕"创建快照/freeze → 导出 dirty bitmap → 按位图读静止镜像"展开，明确不用 QMP `drive-backup`，因为离线 VM 没有 QEMU 进程。
 
-- QEMU 自研 `block-dirty-bitmap-export/import`，导出 QEMUBMP 位图文件。
+- QEMU 自研 `block-dirty-bitmap-export/import`，导出 QEMUBMP 位图文件（**当前 kairos 上所有 qemu 分支都没有这组命令**，见下方风险）。
 - 在线 VM：lictor 执行 `stop → export → clear → cont`，同一窗口内 reflink 出静止副本。
 - 离线 VM：hyper-agent 通过 `qemu-storage-daemon` / `qemu-img` 导出位图。
 - change-point 持久化到 ferrovirt DB 的 `vm_snapshot` / `vm_snapshot_disk`。
@@ -345,7 +345,12 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 
 未完成：xvirt 自带的 BackupService 和 `aegis_change_point` 表。
 
-**风险**：当前检出的 QEMU 11.1 树里没找到 `block-dirty-bitmap-export/import`，`stable-11.1-dev` 的 cherry-pick 清单里也没有这一项；基于 10.0.7 的旧补丁导出已删除，移植规范在 `xvirt/CBT_BITMAP_PERSISTENCE_SPEC.md`。lictor 和 hyper-agent 都在调用这组命令，11.1 上是否可用待核（见 §19）。
+**已确认缺失（2026-11-20 核实）**：kairos 上 qemu 的全部 9 个分支（含 `stable-11.1-dev` `f10e49dac5` 和 `stable-10.0-dev` `8b469b20ef`）都没有 `block-dirty-bitmap-export/import`，`block/monitor/bitmap-qmp-cmds.c` 是上游原样。
+
+- 原实现在旧工作区 qemu 的提交 `1f5bbc160f`（`stable-10.0-dev`，含 import 持久化，见 `xvirt/CLAUDE.md`、`aegis-sdk/docs/local-cbt-backup.md`），2026-11-09 重新导入 kairos 时没带过去。
+- 测试机 195 的对象库和 GitHub 上也找不到这个提交。可能还留着它的地方：开发机本地 qemu 仓的 pack 文件，或 60.112 的 `/root/code/xvirt/qemu`。
+- 影响：lictor `support/cbt.py` 和 hyper-agent `support/cbt_bitmap.py` 都调用这组命令。按现在的 `stable-11.1-dev` 出包部署后，在线/离线 CBT 导出和启动时导入空白位图复位都会失败，aegis-sdk 增量备份链路不可用。
+- 处理：先找回 `1f5bbc160f` 推到 kairos，再移植到 `stable-11.1-dev`；找不回就按 `xvirt/CBT_BITMAP_PERSISTENCE_SPEC.md` 重写，用 aegis-cbt / hyper-agent 里的 QEMUBMP v1 解析代码做字节级对照。
 
 ### 11.2 内存快照
 
@@ -639,7 +644,7 @@ fulmard 不占 TCP 端口：控制 API 走本机 unix socket，数据走共享�
 
 仍存在或新发现的：
 
-- **CBT 在 QEMU 11.1 上可能缺失**：当前 11.1 树里没找到 `block-dirty-bitmap-export/import`，lictor 和 hyper-agent 都依赖它（§11.1），需在 `kairos/stable-11.1-dev` 上核实并按 `CBT_BITMAP_PERSISTENCE_SPEC.md` 移植。
+- **CBT 位图导出/导入已确认缺失**（2026-11-20）：kairos 上全部 qemu 分支都没有 `block-dirty-bitmap-export/import`，原实现提交 `1f5bbc160f` 没进 kairos；lictor 和 hyper-agent 依赖它，按现在的 `stable-11.1-dev` 出包会让 CBT 备份链路失效。需先从开发机本地 qemu 仓或 60.112 旧工作区找回，再移植到 11.1（§11.1）。
 - **文档代际差异更大了**：`xvirt/README.md`、`PACKAGING.md`、`cicd/`、`PIPELINES.md`、`build-deb-xvirt/README.md` 仍是 virt-control / RPM 口径；`xvirt/CLAUDE.md` 还引用已不存在的 `virt-control/` 代码，"VM state 对账未做""仍打 Java virt-control"这两句也已过时；`build-deb/README.md` 写"无 epoch"与脚本矛盾；`aegis-sdk/README.md` 的已知限制没更新。
 - **监控口径不一致**：现行是 VictoriaMetrics，deb 和 xvirt-init 是 Prometheus，VictoriaMetrics 栈没打包。切 kestrel 前要先定口径。
 - **xvirt-client deb 可能打不出来**：`build-deb-xvirt/packages/` 下没有 `xvirt-client`，而打包脚本会处理它的 `control.in`（读代码推断，未实际构建）。
