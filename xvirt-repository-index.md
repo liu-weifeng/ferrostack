@@ -188,7 +188,7 @@ done
 
 - **qemu CBT bitmap export/import 是否已移植到 11.1**：当前 11.1 树里没找到，lictor / hyper-agent 依赖它；旧的 10.0.7 补丁导出已删除，只剩 `xvirt/CBT_BITMAP_PERSISTENCE_SPEC.md` 和 kairos 上的 10.0 分支（见 `xvirt-architecture.md` §11.1、§19）。
 - **qemu `cdp-rename` 未合入**：产品线 QMP 仍是 `io-redirection-*`，cdp 仓 `tests/vm` 已改用新名，两边版本要配套。
-- **kestrel 旧分支**：kairos 上的 `wip/async-query`、`wip/class-retention` 内容已合进 main，待确认后删除。
+- **kestrel 旧分支**：`wip/async-query`、`wip/class-retention`（内容已压成 `099b07a`、`912e7c6` 合进 main）已于 2026-11-20 从 kairos 和测试机 195 删除；开发机本地 kestrel 仓里的同名分支待清理（`git -C kestrel branch -D wip/async-query wip/class-retention && git -C kestrel fetch --prune kairos`）。
 - **fulmar 从未 fetch**（只推过），本地即为最新提交；首次在测试机上编译前先确认 kairos 上没有别处的改动。
 - kairos → GitHub 的自动同步是否启用、同步范围与方向。
 - 哪些仓库私有、哪些公开，交接时要标注权限。
