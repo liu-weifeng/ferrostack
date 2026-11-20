@@ -1,7 +1,8 @@
 # xvirt 架构梳理
 
 生成时间：2026-07-18  
-来源：192.168.60.112:/root/code/xvirt，重点参考 `CLAUDE.md`、`README.md`、`PACKAGING.md`、各组件 README/DESIGN 与源码目录。
+来源：192.168.60.112:/root/code/xvirt，重点参考 `CLAUDE.md`、`README.md`、`PACKAGING.md`、各组件 README/DESIGN 与源码目录。  
+更新：2026-11-20，加入两个新组件——推送式监控框架 **kestrel**（§14.2，拟替代 VictoriaMetrics + exporter）和用户态共享盘文件系统 **fulmar**（§8.1，拟替代 OCFS2）。两者都还没接进 hyper-agent / ferrovirt / QEMU，本文按设计稿描述目标形态，并标出当前实现状态。
 
 ## 1. 项目定位
 
@@ -44,8 +45,12 @@ guest 内 xvirt-tools
 旁路/扩展：
 concilium 集群资源管理 -> lictor CLI
 petrel 分布式块存储，由 hyper-agent 托管守护进程
+fulmar 用户态共享盘文件系统（规划中，替代 OCFS2）：每主机一个 fulmard，
+       hyper-agent 经 unix socket 控制，QEMU 经 libfulmar 共享内存环读写
 aegis-sdk / cdp-agent / cdp-worker 备份与 CDP
-VictoriaMetrics / vmagent / ebpf_exporter / Grafana 监控
+VictoriaMetrics / vmagent / ebpf_exporter / Grafana 监控（现行）
+kestrel 推送式监控（规划中，替代上一行）：各服务内嵌 SDK 推到 kestreld :7410，
+        ferrovirt / 界面经 HTTP :7411 查询
 lycan/krait/fledge/build-deb-xvirt 打包部署与自动装机
 ```
 
@@ -59,11 +64,13 @@ lycan/krait/fledge/build-deb-xvirt 打包部署与自动装机
 | lictor | Python asyncio / pyzmq | QEMU/QMP 持有者，承接 VM 生命周期、快照、迁移、热插拔、xvirt-tools | ROUTER :5560，PUB :5561 |
 | concilium | C daemon | 集群资源管理，驱动 `xvirt-vm` RA 到 lictor；单节点可 bootstrap quorum | `/run/conciliumd.sock` |
 | petrel | Rust | 分布式存储，块卷经 vhost-user-blk 给 VM；由 hyper-agent reconcile | mon :6790 等 |
+| fulmar | Rust（libfulmar 为 C ABI） | 用户态共享盘文件系统，替代 OCFS2 做共享 datastore；COW + O(1) reflink 快照，本地/集群同格式 | `fulmard` 控制 socket，`fulmar:` 块驱动；见 §8.1 |
 | QEMU | C，自研改造 | 虚拟化底座，含 CBT 位图导出/导入、memtier、迁移相关改造 | qemu 工作树 |
 | xvirt-tools | Go | guest VM 内 daemon，经 virtio-serial 与 host 通信 | guest 内服务 |
 | aegis-sdk | C library + CLI | 类 VDDK 的备份 SDK，提供磁盘读写/CBT 能力 | `libaegisdisk.so`、`aegis-cbt` |
 | cdp-agent | Rust + C 内核驱动 | guest 内 CDP，拦截写 IO 并流出到 sink | agent -> sink TCP |
-| monitoring | VictoriaMetrics 生态 | 宿主机/VM/数据存储指标、告警、Grafana | vmagent :8429，vmsingle :8428 |
+| monitoring | VictoriaMetrics 生态 | 宿主机/VM/数据存储指标、告警、Grafana（现行） | vmagent :8429，vmsingle :8428 |
+| kestrel | Rust 服务端 + Rust/Python/C SDK | 推送式轻量监控，拟替代上一行；对象 + 指标集模型，分层精简，保留突发 | 推送 :7410，查询 :7411；见 §14.2 |
 
 ## 4. ferrovirt 控制面
 
@@ -137,8 +144,54 @@ xvirt 存储体系同时支持传统本地/共享数据存储与自研分布式�
 - zfs：agent 调用 zfs 工具创建 dataset。
 - nfs / ocfs2 / gfs2 / iscsi / lvm：作为数据存储或块设备能力纳入扫描/管理。
 - petrel：Rust 分布式存储，提供 mon/osd/vhost 等 CLI/守护进程，VM 可通过 vhost-user-blk 使用块卷。
+- fulmar（规划中）：用户态共享盘文件系统，`fs_type=fulmar`，用来替代 OCFS2，见 §8.1。
 
 一个重要历史约束：`data_store.uuid` 和 `/datastore/<segment>` 中的路径段不一定相同。VM 创建时 agent 需要的 `vm_datastore` 是 mount path 的最后一段，而不是 entity uuid。当前 ferrovirt/服务层会做适配。
+
+### 8.1 fulmar 用户态共享盘文件系统（替代 OCFS2）
+
+设计稿：`docs/fulmar-design.md` v1.1；代码：独立子仓 `fulmar`。
+
+**为什么要换。** 现在的共享 datastore 是内核态 OCFS2（hyper-agent 用 o2cb 单节点集群格式化挂载，盘是 raw 文件，快照靠 `cp --reflink`，差异靠 FIEMAP 比对）。问题有四个：内核模块要按内核版本自编译打包；碎片多了以后 reflink 变慢（要逐个 extent 复制并更新 refcount）；快照后首写按 cluster（通常 1MB）读改写，写放大大；心跳超时会 panic 整机。
+
+**定位。** fulmar 建在共享 LUN / NVMe-oF / 本地 NVMe 之上，对象是少量大文件（VM 盘、memtier 换出后端、内存快照、ISO），不做通用 POSIX。它和 petrel 并存，不替代 petrel：petrel 是多副本 / EC 的分布式块存储，fulmar 是共享磁盘上的文件系统，用哪个由 datastore 类型决定。
+
+```text
+hyper-agent ──控制 API（unix socket，JSON）──► fulmard（每主机一个）
+                                                 │ IO 线程轮询
+QEMU block/fulmar.c ─┐                           │
+QEMU memtier 后端    ├─ libfulmar（C ABI）── 共享内存环（SQ/CQ）
+                     ┘   或 extent 租约直通（memtier 换入）
+qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写）
+                                                 ▼
+                         块后端：io_uring + O_DIRECT 裸盘（默认）｜ SPDK（可选）
+                                                 ▼
+          盘上：超级块 │ 集群区（心跳槽 / ATS 锁 / 成员表）│ 每节点 journal │ AG×N
+```
+
+组成：
+
+| 部件 | 作用 |
+|---|---|
+| `fulmard` | 每主机一个常驻进程：挂载、元数据与 journal、IO 线程、集群成员 / 心跳 / 锁、QoS、FUSE 网关 |
+| `libfulmar` | C ABI 客户端库，QEMU 直接链接；异步读写、flush、discard、write_zeroes、block_status、extent 租约 |
+| QEMU `block/fulmar.c`、`memtier/backing-fulmar.c` | 块驱动（`fulmar:<datastore>/<path>`）与 memtier 换出后端 |
+| `fulmar` CLI / `mkfs.fulmar` / `fulmar-fsck` | 管理、格式化、离线修复与在线校验；`fulmar diff` 直接输出 `.xvdiff` |
+
+关键设计：
+
+- **用户态、不经页缓存**：数据走 io_uring 直写裸块设备，内核升级不用动；需要再省几微秒时换 SPDK 后端，上层不变。
+- **O(1) reflink**：新 inode 指向同一棵 extent B+ 树的根并给根加引用，数据 extent 的引用计数等第一次 COW 时再成批补；reflink 耗时与碎片程度无关。
+- **ROW 写，无读放大**：快照后的写只为写到的范围分配新 extent，不读旧数据。extent 记录带 birth generation，热路径判断"是否共享"不用查 refcount 树。
+- **所有权分区**：每个 VM 盘任一时刻只属于运行它的节点，空间按 AG 租给节点，热路径没有分布式锁；快照只读，任意节点可同时读。
+- **本地 / 集群同格式**：集群区始终在盘上，本地模式只是不开心跳和锁，可以在线切到集群模式。集群模式用盘 + 网双心跳（约 7 秒判死）、ATS 盘上锁、轻量 DLM；故障时**自 fence 停数据路径**（QEMU 收到 EIO 暂停），幸存节点用 SCSI PR 抢占兜底，不重启主机。
+- **配合 memtier**：提供 `pinned` 文件类，换入时把块设备 fd 和 extent 映射租给 QEMU 直读，走的是和裸分区后端相同的 io_uring 路径。这样 memtier 换出文件可以放在共享 datastore 上。
+- **按盘限速**：令牌桶，参数与 QEMU throttle 同名，控制 API 在线调整。
+- **快照链工具兼容**：`fulmar fiemap` 保持 FIEMAP 兼容，`xvirt-blockdiff` / `xvirt-snapmig` / `cdp` 可以不改；`fulmar diff` 跳过两棵树里相同的子树，开销与变化量成正比。
+
+与现有组件的衔接（设计稿 §十三）：hyper-agent 新增 `support/datastore/fulmar.py` 和 `-blockdev driver=fulmar` 生成；QEMU 新增两个驱动文件，迁移时调所有权交接；lictor 的快照 / 迁移改走 datastore 接口，不直调 `cp --reflink`；`fulmard` 的轮询核与环用大页从资源规划的存储池（现 `spdk` 池）划拨。OCFS2 迁移走现有跨 datastore 快照链迁移或 drive-mirror，OCFS2 只读保留到清空为止。
+
+**当前状态（2026-11-20）**：子仓 `fulmar` main `f76e2fc`，11 个 crate + 4 个可执行 + libfulmar。本地模式的 mkfs / fulmard / 共享内存环 / libfulmar C ABI / CLI / fsck 链路代码已写完，**还没编译、没测试**；集群模式（P3）只有骨架；hyper-agent、QEMU、lictor 一侧都没动。分期：P0 本地原型 → P1 memtier + 工具链 + hyper-agent datastore → P2 性能档（vhost-user-blk、SPDK）→ P3 集群 → P4 运维。实现语言（骨架已按 Rust 写）、默认 `cow_chunk`、FUSE 是否可写、集群槽数、memtier 直通是否默认、SPDK 是否进本期，共六项待拍板（设计稿 §十七）。
 
 ## 9. 网络体系
 
@@ -243,6 +296,40 @@ ebpf_exporter :9435
 
 配套组件包括 Grafana、vmalert、Alertmanager、飞书 adapter。host 通用 OS 指标由 hyper-agent 自身读 `/proc` 暴露，VM/datastore/zpool 语义指标也由 hyper-agent exporter 提供。
 
+### 14.1 现行方案的问题
+
+拉模式要为每类数据配 exporter 和抓取目标；VM、盘、OSD 随时增减，要靠服务发现跟；降采样后突发只剩平均值；长期容量随保留期线性增长。这些是引入 kestrel 的原因。
+
+### 14.2 kestrel 推送式监控框架（拟替代 VictoriaMetrics + exporter）
+
+设计稿：`docs/kestrel-design.md` v1.5；代码：独立子仓 `kestrel`。
+
+```text
+hyper-agent / lictor（Python SDK）
+petrel / fulmar / cdplog / ferrovirt（Rust SDK）     一条长连接，推送协议
+qemu / concilium / cdp（C SDK，调用方定期 kst_poll）  ───────────────────►  kestreld :7410
+                                                                               │
+                                       ferrovirt / 界面 / 脚本 ◄── HTTP JSON :7411
+```
+
+- **推而不拉**：底层服务在自己进程里取数，通过 SDK 推给 `kestreld`。没有 exporter、没有 scrape、没有服务发现；对象一帧注册、一帧注销，超时自动判失联。
+- **对象 + 指标集**，不是序列 + 标签：一个监控对象（一台 VM、一块盘、一个 OSD）绑定一组有名字、有类型的字段（瞬时值 / 累计量 / 状态 / 事件），每次推送一行；没有标签倒排索引。
+- **分层存储、写入时精简**：原始 / 1 分钟 / 5 分钟 / 1 小时 / 1 天五层（默认原始 2 小时，聚合层分别 1 天 / 7 天 / 90 天 / 2 年）。多个对象共用按时间窗口切分的顺序追加文件；聚合在写入时增量完成，窗口到期封存一次，过期整窗删除，没有持续的后台压实。保留期可以按对象类别单独配置。每对象磁盘占用到保留期满即封顶（16 字段约 2.6 MB）。
+- **保留突发**：每个聚合桶带 min / max / 峰值时刻；在线检测到突发时把那一段原始分辨率整行另存为片段，按重要度保留，可配置为永久；状态变化和突发都记成事件。
+- **服务端**：一个 epoll 主线程收数并答内存查询，同步、封存各一个辅助线程，另有查询线程读文件，只依赖 libc。查询接口为 `/api/v1/{objects,latest,series,bursts,events,stats}`，不做 PromQL；跨对象聚合由知道归属关系的服务另推一个对象（如 hyper-agent 推 `host/<名>`）。
+- **资源**：1 万对象实测内存约 129 MB（每对象约 13 KB），机械盘即可承载。
+
+接入后的数据流变化：
+
+| 现行 | kestrel |
+|---|---|
+| hyper-agent exporter :9101 + ebpf_exporter :9435 被 vmagent 抓 | hyper-agent / lictor 等直接推 :7410 |
+| vmagent → vmsingle :8428 | kestreld 自带存储 |
+| ferrovirt `resource_metrics.rs` 用 PromQL 取数 | 改调 :7411 的 `series` / `latest` |
+| vmalert + Alertmanager 告警 | 本版只有事件；告警放 kestreld 还是 ferrovirt 待定 |
+
+**当前状态（2026-11-20）**：子仓 `kestrel` main `912e7c6`（含 v1.5 的按类别保留与片段永久保留）。2026-11-19 在测试机 10.8.1.195 上编译通过，57 个测试和 24 项端到端都过；1 万对象规模、长范围查询、冷查询并发都实测过，但这些是 v1.5 之前跑的，按类别保留加入后没重跑。还**没有任何生产组件接入 SDK**，现行监控栈不变。待拍板六项（设计稿 §13）：名字、默认分层与保留期、min/max 是否用 f32、与 VictoriaMetrics 并行还是直接切、告警放哪、数据目录放什么盘。
+
 ## 15. 打包与部署
 
 当前部署以 deb 包、systemd unit 和 `xvirtctl` 为主。顶层 `PACKAGING.md` 仍保留 Rocky/RPM/ISO 的大量历史说明，但顶部备注指出新栈形态已经是 `ferrovirt + lictor + concilium + hyper-agent + xvirt-client + monitoring`。
@@ -279,6 +366,9 @@ lictor -> hyper-agent -> ferrovirt -> concilium -> nginx
 | 6790 | petrel mon |
 | 8428 / 8429 | VictoriaMetrics / vmagent |
 | 9101 / 9435 | hyper-agent exporter / ebpf_exporter |
+| 7410 / 7411 | kestreld 推送 / 查询（规划中） |
+
+fulmard 不占 TCP 端口：控制 API 走本机 unix socket，数据走共享内存环；集群模式另有节点间 TCP（成员、租约、DLM），端口待定。
 
 ## 16. 技术特点总结
 
@@ -292,6 +382,7 @@ lictor -> hyper-agent -> ferrovirt -> concilium -> nginx
 8. 具备高级虚拟化能力：在线迁移、热插拔、reflink 快照、分布式存储、内存分层超分、SR-IOV 模型。
 9. 部署链完整：从组件 deb、离线 bundle、ISO、PXE、自动化测试到监控告警都有配套项目。
 10. 多语言与角色化控制台：前端支持 center/standalone，两套管理视角，并逐步国际化。
+11. 去内核模块、去外部依赖的方向（规划中）：共享存储从内核 OCFS2 转向用户态 fulmar，监控从 VictoriaMetrics + exporter 转向服务自推的 kestrel，两者都只用稳定的内核接口与 libc。
 
 ## 17. 主要风险与待办
 
@@ -303,6 +394,8 @@ lictor -> hyper-agent -> ferrovirt -> concilium -> nginx
 - 部分前端深层表单/向导正文仍有硬编码中文，i18n 尚未完全迁移。
 - 旧组件/旁路组件较多，如 virt-control、旧 hyper-agent 残留、cdp-worker、krait/lycan/fledge 等，需要明确哪些是生产路径，哪些是历史/实验路径。
 - memtier、petrel、热插拔、在线迁移都依赖底层 QEMU/内核/硬件条件，生产部署需要检查兼容矩阵。
+- fulmar 代码未编译未测试，COW 引用计数与 ENOSPC 的正确性是主要风险（设计稿要求模型级单测 + 模糊测试 + 从 P0 起就有 fsck）；集群模式依赖阵列的 ATS / SCSI PR 支持，要做能力探测，不支持就拒绝集群挂载。
+- kestrel 切换期要改 ferrovirt `resource_metrics.rs`（PromQL → kestrel 查询接口），并决定告警归属；在此之前现行监控栈不能拆。按类别保留的规模表现还没测。
 
 ## 18. 建议的后续文档拆分
 
