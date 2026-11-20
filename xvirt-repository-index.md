@@ -69,12 +69,11 @@ git@kairos.xve-vt.com:local/<repo>.git
 | `stable-11.1-dev` | `7e96c87daa` | 默认分支。2026-09-27 从 `upstream/stable-11.1` 建出并 cherry-pick 全部自研改动，2026-11-10 合入 memtier-stats + memtier-heat，2026-11-20 合入 CBT 位图导出/导入（squash，`b63be76397`）和 cdp-rename（合并 `3198719878` + 补修 `7e96c87daa`） | 产品线，`build-deb` 打这个分支。开发机本地已没有同名分支，合并以 `kairos/stable-11.1-dev` 为准 |
 | `memtier-stats` | 有 | 写盘统计、零页不落盘、swap-cache、分块日志打洞/压实、`resident-cold-bytes` | 已合入 |
 | `memtier-heat` | `d9cff878a1` | `x-memtier-query-heat` 热度直方图、抽样扫描、先探测 page_idle 再回退 write-aging | 已合入；本地当前检出 |
-| `cdp-rename` | `3ef92ae` | QMP `io-redirection-*` 改名为 `cdp-*`，并修写钩子范围、写零、fifo、阻塞模式 | 2026-11-20 已合入 stable-11.1-dev（原分支编不过，合并时补修了 `system/runstate.c`）；未做 recorder + guest 端到端 |
 | `memory-tiering` | 有 | memtier 早期开发分支（10.0 血统） | 历史，内容已进 11.1 |
 | `stable-10.0(-dev)` | 有 | 10.0 血统产品线 | 历史 |
 | `qemu-10.0-cdp-port-*`、`x-query-ram-layout-*` | 有 | 临时移植分支 | 历史 |
 
-开发机 qemu 仓原有的旧本地分支（`stable-11.1-dev` 旧分叉副本、`stable-10.0-dev`、`memory-tiering`、`memtier-stats`、`desktop`、`cdp-upgrade`、`cdp-timestamp-ns`）已于 2026-11-20 删除，内容核对过都已在 kairos 上；本地现在只有 `memtier-heat`、`cdp-rename`。
+开发机 qemu 仓原有的旧本地分支（`stable-11.1-dev` 旧分叉副本、`stable-10.0-dev`、`memory-tiering`、`memtier-stats`、`desktop`、`cdp-upgrade`、`cdp-timestamp-ns`）已于 2026-11-20 删除，内容核对过都已在 kairos 上。合入 stable-11.1-dev 后的 `cdp-rename` 也已于同日从 kairos 和本地删除。本地现在只有 `memtier-heat`。
 
 ## 3. 存储、快照、备份与数据面仓库
 
