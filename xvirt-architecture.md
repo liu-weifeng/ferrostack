@@ -479,7 +479,7 @@ guest 内 cdp-agent ──TCP──► cdp-sink（iolog 模式，同样产出 v2
   子链）                   （/dev/ublkbN 给 QEMU）    可续传）
 ```
 
-- **采集**：QEMU 侧 QMP 在产品线（`stable-11.1-dev`）上仍叫 `io-redirection-*`。改名为 `cdp-attach` / `cdp-detach` / `cdp-update` / `query-cdp` / `cdp-checkpoint` / `cdp-resume` 的改动在 qemu `cdp-rename` 分支，同时修了写钩子范围、写零按 1MiB 记录、fifo、阻塞模式，**未合入、未验证**。discard 不采集。
+- **采集**：QEMU 侧 QMP 为 `cdp-attach` / `cdp-detach` / `cdp-update` / `query-cdp` / `cdp-checkpoint` / `cdp-resume`，旧的 `io-redirection-*` 保留为 deprecated 别名。改名连同写钩子范围、写零按 1MiB 记录、fifo 错误标志对齐、阻塞模式的修复，于 2026-11-20 合入 `stable-11.1-dev`（合并 `3198719878`，另补 `system/runstate.c` 漏改 `7e96c87daa`）；编译、QMP 冒烟和 iotests 通过，**配合 cdp-recorder 与真 guest 的端到端未验证**。discard 不采集。
 - **记录**：`cdp/recorder/`，二进制 `cdp-recorder`，保留 `cdpwork` 软链接和包名 Provides/Obsoletes。`cdp-checkpoint` 打同步点，`cdp-resume` 配合存储侧 reflink 快照恢复记录。
 - **引擎**：`cdp/cdplog`，Rust `libcdplog` + C 接口 + `cdplog` CLI。能力有：崩溃恢复、持续合并（重写、打洞、并入 base、紧急回收、分级保留）、三种搬运模式（全量 / 按有效索引 / 降级为位图）、子链与回切、多盘一致同步点、降级组转精简段。格式口径：文档叫"v3"，文件头 version 字段为 4，按批自描述。到 `6efead6` 为止的代码在 10.8.1.195 上编译测试通过，**已实测**。未覆盖：跨机 ssh 搬运、真实 VM 降级流程、VMware 即时恢复、NVMe。
 - **guest 内 CDP**：`cdp-agent`，Rust 用户态 + Linux `dm-cdp` / Windows `cdpflt` 过滤驱动，两者都做过真 VM 验证。cdp-sink 支持 iolog / disk / replica 三种模式，可组合。

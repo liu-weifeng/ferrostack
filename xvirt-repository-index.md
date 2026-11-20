@@ -59,17 +59,17 @@ git@kairos.xve-vt.com:local/<repo>.git
 | hyper-agent | main | `e80ec6d` | 11-09 | Python 宿主机 agent：存储/网络/硬件/文件/petrel；资源规划 apply 与放置控制器；memtier 总控与 NVMe 写入预算；VM 类 action 转 lictor 或 concilium |
 | lictor | main | `317ee3d` | 11-09 | Python QMP owner：VM 生命周期、快照（含内存分层快照 keep/merge）、迁移、热插拔、xvirt-tools；systemd scope 与绑核 |
 | concilium | main | `4eeea1e` | 11-09 | C 集群资源管理：gossip :7700、选主、HA、self-fence + STONITH，驱动 `xvirt-vm` RA 到 lictor；迁移 RA 仍是桩 |
-| qemu | stable-11.1-dev（当前检出 memtier-heat） | kairos `b63be76397` | 11-20 | 自研 QEMU fork，基线 11.1.1。memtier 全套（含热度直方图、swap-cache）、CDP io-redirection、CBT 位图导出/导入、热度 pre-copy 迁移、ram-layout、qcow2 在线缩盘、xdesk。分支见 §2.1 |
+| qemu | stable-11.1-dev（当前检出 memtier-heat） | kairos `7e96c87daa` | 11-20 | 自研 QEMU fork，基线 11.1.1。memtier 全套（含热度直方图、swap-cache）、CDP 采集（`cdp-*` QMP，旧 `io-redirection-*` 为 deprecated 别名）、CBT 位图导出/导入、热度 pre-copy 迁移、ram-layout、qcow2 在线缩盘、xdesk。分支见 §2.1 |
 | kestrel | main | `912e7c6` | 11-19 | Rust 推送式轻量监控框架（拟替代 VictoriaMetrics + exporter）：kestreld + Rust/Python/C SDK，按类别保留、突发片段永久保留；设计见 `docs/kestrel-design.md` v1.5；2026-11-19 在 10.8.1.195 上编译、57 个测试、端到端都过；尚无生产组件接入 |
 
 ### 2.1 qemu 分支
 
 | 分支 | kairos | 内容 | 状态 |
 |---|---|---|---|
-| `stable-11.1-dev` | `b63be76397` | 默认分支。2026-09-27 从 `upstream/stable-11.1` 建出并 cherry-pick 全部自研改动，2026-11-10 合入 memtier-stats + memtier-heat，2026-11-20 合入 CBT 位图导出/导入（squash） | 产品线，`build-deb` 打这个分支。开发机本地已没有同名分支，合并以 `kairos/stable-11.1-dev` 为准 |
+| `stable-11.1-dev` | `7e96c87daa` | 默认分支。2026-09-27 从 `upstream/stable-11.1` 建出并 cherry-pick 全部自研改动，2026-11-10 合入 memtier-stats + memtier-heat，2026-11-20 合入 CBT 位图导出/导入（squash，`b63be76397`）和 cdp-rename（合并 `3198719878` + 补修 `7e96c87daa`） | 产品线，`build-deb` 打这个分支。开发机本地已没有同名分支，合并以 `kairos/stable-11.1-dev` 为准 |
 | `memtier-stats` | 有 | 写盘统计、零页不落盘、swap-cache、分块日志打洞/压实、`resident-cold-bytes` | 已合入 |
 | `memtier-heat` | `d9cff878a1` | `x-memtier-query-heat` 热度直方图、抽样扫描、先探测 page_idle 再回退 write-aging | 已合入；本地当前检出 |
-| `cdp-rename` | `3ef92ae` | QMP `io-redirection-*` 改名为 `cdp-*`，并修写钩子范围、写零、fifo、阻塞模式 | **未合入、未编译** |
+| `cdp-rename` | `3ef92ae` | QMP `io-redirection-*` 改名为 `cdp-*`，并修写钩子范围、写零、fifo、阻塞模式 | 2026-11-20 已合入 stable-11.1-dev（原分支编不过，合并时补修了 `system/runstate.c`）；未做 recorder + guest 端到端 |
 | `memory-tiering` | 有 | memtier 早期开发分支（10.0 血统） | 历史，内容已进 11.1 |
 | `stable-10.0(-dev)` | 有 | 10.0 血统产品线 | 历史 |
 | `qemu-10.0-cdp-port-*`、`x-query-ram-layout-*` | 有 | 临时移植分支 | 历史 |
@@ -187,7 +187,7 @@ done
 ## 9. 需要后续核对或处理的点
 
 - **qemu CBT bitmap export/import 是 11.1 重写版，待真 VM 验证**：10.0 原实现 `1f5bbc160f` 没进 kairos，开发机、195、GitHub 上都找不到；2026-11-20 按 `xvirt/CBT_BITMAP_PERSISTENCE_SPEC.md` 重写并合入 `stable-11.1-dev`（`b63be76397`），iotests 和调用方兼容测试都过了。出包前还要经 lictor 在真 VM 上验证（见 `xvirt-architecture.md` §11.1、§19）。
-- **qemu `cdp-rename` 未合入**：产品线 QMP 仍是 `io-redirection-*`，cdp 仓 `tests/vm` 已改用新名，两边版本要配套。
+- **qemu CDP 改名已合入，待端到端验证**：`stable-11.1-dev` 已是 `cdp-*` QMP（旧名保留为 deprecated），与 cdp 仓 `tests/vm` 及 cdp-recorder 的新协议细节（fifo 错误标志、阻塞字节）配套；出包前用 `cdp/tests/vm` 配合 cdp-recorder 跑一次端到端（写零、阻塞模式 `-e`、`cdp-resume`）。
 - **kestrel 旧分支**：`wip/async-query`、`wip/class-retention`（内容已压成 `099b07a`、`912e7c6` 合进 main）已于 2026-11-20 从 kairos 和测试机 195 删除；开发机本地 kestrel 仓里的同名分支待清理（`git -C kestrel branch -D wip/async-query wip/class-retention && git -C kestrel fetch --prune kairos`）。
 - **fulmar 从未 fetch**（只推过），本地即为最新提交；首次在测试机上编译前先确认 kairos 上没有别处的改动。
 - kairos → GitHub 的自动同步是否启用、同步范围与方向。
