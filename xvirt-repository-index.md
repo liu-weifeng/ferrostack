@@ -66,7 +66,8 @@ git@kairos.xve-vt.com:local/<repo>.git
 
 | 分支 | kairos | 内容 | 状态 |
 |---|---|---|---|
-| `stable-11.1-dev` | `b63be76397` | 默认分支。2026-09-27 从 `upstream/stable-11.1` 建出并 cherry-pick 全部自研改动，2026-11-10 合入 memtier-stats + memtier-heat，2026-11-20 合入 CBT 位图导出/导入（squash） | 产品线，`build-deb` 打这个分支。**本地同名分支（`424651e`）是旧的分叉副本，不要推它**，合并以 `kairos/stable-11.1-dev` 为准 || `memtier-stats` | 有 | 写盘统计、零页不落盘、swap-cache、分块日志打洞/压实、`resident-cold-bytes` | 已合入 |
+| `stable-11.1-dev` | `b63be76397` | 默认分支。2026-09-27 从 `upstream/stable-11.1` 建出并 cherry-pick 全部自研改动，2026-11-10 合入 memtier-stats + memtier-heat，2026-11-20 合入 CBT 位图导出/导入（squash） | 产品线，`build-deb` 打这个分支。**本地同名分支（`424651e`）是旧的分叉副本，不要推它**，合并以 `kairos/stable-11.1-dev` 为准 |
+| `memtier-stats` | 有 | 写盘统计、零页不落盘、swap-cache、分块日志打洞/压实、`resident-cold-bytes` | 已合入 |
 | `memtier-heat` | `d9cff878a1` | `x-memtier-query-heat` 热度直方图、抽样扫描、先探测 page_idle 再回退 write-aging | 已合入；本地当前检出 |
 | `cdp-rename` | `3ef92ae` | QMP `io-redirection-*` 改名为 `cdp-*`，并修写钩子范围、写零、fifo、阻塞模式 | **未合入、未编译** |
 | `memory-tiering` | 有 | memtier 早期开发分支（10.0 血统） | 历史，内容已进 11.1 |
