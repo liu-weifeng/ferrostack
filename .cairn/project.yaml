@@ -6,12 +6,23 @@ local_documents:
     include:
         - '*.md'
         - docs/**/*.md
-        - xvirt-claude-memory-raw/**/*.md
+        - demo/**/*.md
         - '*/*.md'
+        - '*/docs/**/*.md'
     exclude:
         - '**/secrets/**'
         - '**/lab-env/**'
         - .cairn/**
+        # Agent 规则文件，不是项目文档
+        - '**/CLAUDE.md'
+        - '**/AGENTS.md'
+        - '**/GEMINI.md'
+        # 上游 SPDK 自带文档
+        - spdk-analysis/**
+        # 原始 Agent 记忆，含实验室凭据
+        - xvirt-claude-memory-raw/**
+        # 含实验室 root/Jenkins 密码
+        - xvirt-autotest/docs/自动化测试方案.md
     uncommitted_visibility: local
 context:
     generated_dir: .cairn/context
