@@ -636,7 +636,7 @@ bursts 和 events 两种查询在并发下的表现（它们只在 e2e 里走过
 1. 名字 kestrel 是否就用它。
 2. 默认分层（§5.1 的表）与默认保留期是否合适，特别是原始层只留 2 小时。
 3. 最小、最大用 f32 存（省三分之一空间，7 位有效数字）是否可以接受。
-4. 现有 `xvirt/monitoring`（VictoriaMetrics + exporter）是并行一段时间再替换，还是直接切。
+4. ~~现有 `xvirt/monitoring`（VictoriaMetrics + exporter）是并行一段时间再替换，还是直接切。~~ **已定（2026-11-22）**：1.0 直接用 kestrel，不打包 VictoriaMetrics；接入方案见 `xvirt-architecture.md` §16.3。
    ferrovirt 的 `resource_metrics.rs` 现在按 PromQL 取数，切换时要改成 §9 的接口。
-5. 告警放在 kestreld 里做，还是由 ferrovirt 读 `/api/v1/latest` 与事件来做。
+5. ~~告警放在 kestreld 里做，还是由 ferrovirt 读 `/api/v1/latest` 与事件来做。~~ **已定（2026-11-22）**：由 ferrovirt 规则引擎读 `/api/v1/latest` 与事件来做（`xvirt-architecture.md` §16.3.6）。
 6. 生产上数据目录放什么盘。新布局下机械盘在 1 万对象时已经够用（§12.1），长范围查询冷读一次 0.3–1 秒（§12.2；不挡收数，只是那个查询自己慢），能不能接受要定。
