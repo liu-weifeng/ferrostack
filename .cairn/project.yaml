@@ -1,0 +1,25 @@
+# Cairn 工作区配置（可提交至 Git；机器令牌与离线队列保存在 .cairn/local/）
+project: ferrostack
+workspace_root: ..
+repository_discovery: explicit-and-nested-git
+local_documents:
+    include:
+        - '*.md'
+        - docs/**/*.md
+        - xvirt-claude-memory-raw/**/*.md
+        - '*/*.md'
+    exclude:
+        - '**/secrets/**'
+        - '**/lab-env/**'
+        - .cairn/**
+    uncommitted_visibility: local
+context:
+    generated_dir: .cairn/context
+    historical_paths:
+        - xvirt-claude-memory-raw/**
+collaboration:
+    capture_mode: on-demand
+    refresh_on:
+        - session-start
+        - checkpoint
+        - handoff
