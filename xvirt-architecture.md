@@ -784,8 +784,8 @@ CREATE TABLE IF NOT EXISTS alert_rule (
    - 文件头注释里的服务清单同步更新。
 4. **compute 节点拿到 center 的地址与口令**：在纳管流程里下发，不另开通道。
    - center 侧：`host_admin::run_add_host_worker` 发 ENROLL 时在请求体里加 `kestrel: {addr: "<center 管理 IP>:7410", token: "<center kestreld 口令>"}`（center 从本机 `/etc/kestrel/kestreld.conf` 读口令，管理 IP 取 ferrovirt 已有的本机地址配置）。
-   - compute 侧：`controller/internal.rs` 的 `op_enroll` 收到后写 `/etc/xvirt/kestrel.conf`（0600）；`op_unenroll` 删除该文件。hyper-agent / lictor 30 s 内发现变化并开始 / 停止推送（§16.3.4）。
-   - 已经纳管的 compute 节点：center 升级后执行一次 `POST /api/vcenter/host/{uuid}?action=resync-monitoring`（新增，重发 kestrel 配置，复用 ENROLL 的 node_zmq 通道里新加的 `SET_MONITORING` 操作）。
+   - compute 侧：`controller/internal.rs` 的 `op_enroll` 收到后写 `/etc/xvirt/kestrel.conf`（0600，原子替换），ENROLL 响应里带 `monitoring: {status}` 供 center 记日志；`op_unenroll` 后：**standalone 节点**（本机自己跑 kestreld）恢复推给本机 `127.0.0.1:7410`（口令取本机 kestreld.conf），**compute 节点**删除该文件停推。hyper-agent / lictor 30 s 内发现变化并开始 / 停止推送（§16.3.4）。被纳管的 standalone 节点因此在纳管期间推给 center、本机界面的监控曲线会断（数据在 center 上看），解除纳管后恢复。实现见 ferrovirt `service/kestrel_conf.rs`。
+   - 已经纳管的 compute 节点：center 升级后执行一次 `POST /api/vcenter/host/{uuid}?action=resync-monitoring`（重发 kestrel 配置，node_zmq 新操作 `monitoring.set`，用 `host_membership.sync_token` 鉴权，不要 root 口令；payload 的 `kestrel` 为 null 时按解除纳管处理）。管理控制台主机右键菜单「重新下发监控配置」调它。
    - 依赖 xvirt `bed0917`（compute 节点运行 node 模式 ferrovirt）。
 5. **ferrovirt.env**：`FERROVIRT__METRICS__KESTREL_URL=http://127.0.0.1:7411`，删除 `PROMETHEUS_URL` 行。
 
@@ -801,7 +801,9 @@ CREATE TABLE IF NOT EXISTS alert_rule (
 
 K0 → K1 → K2 可以按顺序由不同人接力；K3 依赖 K1（要有数据）；K4 依赖 K2 与 xvirt `bed0917` 的 compute 节点验证。
 
-**进度（2026-11-23）**：K3 代码已写，**未编译、未验证**：ferrovirt `service/alert_rule.rs`（表 + 10 条预置规则 + CRUD + 每 30 s 评估器 + 主机断连 + 监控数据中断）与 `controller/alert_rule.rs`（`/api/vcenter/alert-rules[/fields|/{uuid}]`）、`host_manager` 连接状态翻转时出 / 消断连告警（只在 connected→disconnected 那一次 raise）；hyper-agent `support/ha_events.py`；xvirt-client 告警页「告警规则」子页（列表、启停、新建 / 编辑 / 删除）；xvirt-autotest stage 35 `metrics.*`（overview / host_series / datastore_series / source_error*）与 stage 36 `alertrule.*`（crud / fire_and_resolve / scope / builtin_ds_full* / host_disconnect*），已在 Cairn 套件 TS-FS-XVIRT-AUTOTEST 登记并按上表 verifies 关联。§16.3.9 里需要 VM 或特定环境的 `metrics.vm_series_no_tools` / `vm_disk_io` / `petrel_*` 与 `alertrule.ha_action`、`alertrule.petrel_osd_down` 还没写用例。
+**进度（2026-11-23）**：K4 代码已写，**未编译、未验证**：ferrovirt `service/kestrel_conf.rs`（center 读本机 kestreld.conf 拼推送目标；节点写 / 复位 `/etc/xvirt/kestrel.conf`）、ENROLL 带 `kestrel`、`op_enroll` / `op_unenroll` 写 / 复位、node_zmq `monitoring.set`、`action=resync-monitoring`；xvirt-client 管理控制台主机右键「重新下发监控配置」。center 概览汇总全部纳管主机在 K2 已实现（kestreld 收的就是所有纳管主机）。K0–K4 代码全部写完，整体待测试机验证（§16.3.9）。
+
+K3：代码已写，**未编译、未验证**：ferrovirt `service/alert_rule.rs`（表 + 10 条预置规则 + CRUD + 每 30 s 评估器 + 主机断连 + 监控数据中断）与 `controller/alert_rule.rs`（`/api/vcenter/alert-rules[/fields|/{uuid}]`）、`host_manager` 连接状态翻转时出 / 消断连告警（只在 connected→disconnected 那一次 raise）；hyper-agent `support/ha_events.py`；xvirt-client 告警页「告警规则」子页（列表、启停、新建 / 编辑 / 删除）；xvirt-autotest stage 35 `metrics.*`（overview / host_series / datastore_series / source_error*）与 stage 36 `alertrule.*`（crud / fire_and_resolve / scope / builtin_ds_full* / host_disconnect*），已在 Cairn 套件 TS-FS-XVIRT-AUTOTEST 登记并按上表 verifies 关联。§16.3.9 里需要 VM 或特定环境的 `metrics.vm_series_no_tools` / `vm_disk_io` / `petrel_*` 与 `alertrule.ha_action`、`alertrule.petrel_osd_down` 还没写用例。
 
 K2：代码已写，**未编译、未验证**：ferrovirt `service/kestrel_client.rs`、`service/resource_metrics.rs` 改写（含 VM 磁盘新键、Petrel 数据存储容量、`source_error` / `series_errors`）、`service/overview.rs` + `GET /api/vcenter/overview`、`host.machine_id`（`connect_host` 后经 `host_identity` 回填）、`datastore.petrel_pool`（建 Petrel 数据存储时写入，已有行按哨兵挂载点 `/petrel/<池>` 回填）、`GET /host/{id}/cpu-busy`、删除 PromQL 透传、配置 `KESTREL_URL`（`PROMETHEUS_URL` 读到时告警并忽略）；xvirt `assets/ferrovirt.env`；xvirt-client VM 监控页加磁盘 IOPS / 吞吐 / 延迟三张图、三个监控页状态栏显示监控不可用、资源概览卡（单机主机概览页顶部 + 管理控制台根节点摘要）、主机概览页的 CPU / 内存 / 网络曲线从占位假数据换成真实数据、资源规划页改用 `cpu-busy`。compute 节点本机不跑 kestreld，其节点模式 ferrovirt 的监控接口会返回 `source_error`（界面在 center 上看）。
 
