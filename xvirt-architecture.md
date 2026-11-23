@@ -657,9 +657,13 @@ standalone 节点                         management + compute
 | `vmnic.v1` | `rx_bytes` `tx_bytes` `rx_packets` `tx_packets` `rx_drops` `tx_drops`（counter） | tap 的 `/sys/class/net/<tap>/statistics/*`（方向与 guest 视角相反，推送时交换 rx/tx，使字段表示 guest 视角） |
 | `guest.v1` | `load1` `load5` `load15` `mem_total` `mem_used` `mem_available` `swap_total` `swap_used` `cpu_usage`（gauge） | xvirt-tools `metrics.tick`（现 `collectors/vm.py` 缓存的那一帧） |
 | `guestfs.v1` | `size` `used`（gauge，B） | 同上 |
-| `plan.v1` / `vmtier.v1` | 现 `collectors/resource_plan.py` 中主机级与每 VM 的字段原样搬过来，字段名去掉 `xvirt_` 前缀与 `_total` 后缀；按 NUMA 节点 / 池拆分的多维指标拆成同类别下的子对象（如 `plan/<machine-id>/node0`），总数不超过 64 字段 / 指标集 | 现采集代码 |
+| `plan.v1`（`plan/<machine-id>`） | `tiering_pressure` `tiering_headroom` `tiering_state`（state）`placement_load_index` `placement_tier`（state：0 roomy / 1 medium / 2 tight）`placement_pending_actions` `placement_dedicated_cores_need` `placement_dedicated_cores_avail`；四个 CPU 池各一个 `pool_cpu_ratio_<池>` `pool_cpus_<池>`（池固定为 system / virt / spdk / vm）；六个顶层 slice 各一个 `slice_cpu_seconds_<slice>`（counter）`slice_memory_<slice>`（slice 名里的 `.` 换成 `_`） | `collectors/resource_plan.py`（推送线程按需调它的 `collect`） |
+| `plannode.v1`（`plan/<machine-id>/node<N>`） | `mem_total` `mem_free` `mem_used` `file_pages` `anon_pages` `slab` `oc` `free_dedicated_cores` `free_mem` `health_score`（gauge）`numa_hit` `numa_miss` `numa_foreign`（counter） | 同上 |
+| `vmtier.v1` | `resident_bytes` `swapped_bytes` `backing_used_bytes` `backing_total_bytes` `evict_mbps`（gauge）`swapin_faults` `evict_aborts`（counter）`tier_state`（state）`remote_mem_ratio` `mbm_total` `mbm_local` `remote_bw_ratio` `llc_occupancy`（gauge） | 同上 |
+
+`plan` 类只取上表这些固定字段，不按运行时的 label 值动态拼字段（指标集一变对象就会被退役、历史分段，kestrel 设计 §2.1）；per-CPU busy / runq、per-service、hugepages、NUMA 距离矩阵、vCPU 落点这些高基数或静态的数据 1.0 不推，需要时在资源规划页直接调 agent。
 | `petrel.v1` | `health`（state：0 HEALTH_OK / 1 HEALTH_WARN / 2 HEALTH_ERR / 3 未知）`mon_up`（state）`osd_total` `osd_up` `osd_in`（gauge） | `status()` 的 `health`、`mon_up`、OSD 列表（up = `Up`，in = `reweight > 0`） |
-| `petrelpool.v1` | `stored_bytes` `objects`（gauge）`max_avail_bytes`（gauge，B：该池可选 OSD 的剩余容量之和 ÷ 副本数，EC 池按 k/(k+m)）`used_ratio`（gauge，0–1，0.05）`pg_num`（gauge） | `pools` / `usage` 文本；`used_ratio = stored / (stored + max_avail)` |
+| `petrelpool.v1` | `stored_bytes` `objects`（gauge）`max_avail_bytes`（gauge，B）`used_ratio`（gauge，0–1，0.05）`pg_num`（gauge） | `pools` / `usage` 文本；`used_ratio = stored / (stored + max_avail)`。**`max_avail` 是近似值**：全部 up 且在集群内的 OSD 剩余容量之和 ÷ 池副本数——`petrel-mon` 文本里没有 CRUSH 规则，按设备类区分的池（缓存层 / 数据层）会被高估；精确值要 petrel-mon 提供按规则的可用量（K1 之后） |
 | `petrelosd.v1` | `up` `in`（state）`used_bytes` `total_bytes`（gauge，B）`used_ratio`（gauge，0–1，0.05） | `osds` / `usage` 文本 |
 
 Petrel 字段以 K1 实现时 `petrel-mon` 的 `osds` / `usage` / `pools` 实际输出为准；文本里拿不到的字段（例如 PG 降级数）不推，不编造。PG 级健康与修复建议（REQ-STO-019 的其余部分）仍由存储页面直接调 `petrel_cluster_status` 展示，不经监控。
@@ -687,12 +691,12 @@ lictor（持有 QMP，宿主机侧 VM 数据由它推）：
 
 1. 新模块 `lictor/monitor/vm_metrics.py`：每 10 s 对每台已 attach 的 VM 发一次 `query-blockstats`（走现有 QMP 连接，不新开 socket；不要在 QMP read loop 协程里同步等待，见 xvirt CLAUDE.md「STOP 事件取 reason 的死锁陷阱」），读该 VM systemd scope 的 cgroup `cpu.stat` / `memory.current`，读其 tap 设备计数，推 `vm` / `vmdisk` / `vmnic`。
 2. 设备 alias 与 tap 名的对应关系取自 VM 的 config.xml（lictor 启动 VM 时已解析过），盘与网卡热插拔后在下一拍按新设备列表注册 / 注销子对象。
-3. **Petrel 盘**：config.xml 之外的 vhost 盘列表（`qemu_command.py` 的 `vhost_disks`）里每块盘也注册 `vmdisk` 对象，计数读 petrel-vhost 的每卷计数文件（见下），不发 `query-blockstats`；`vm` 的磁盘合计字段把两种来源加在一起。计数文件不存在（旧版 petrel-vhost）时这块盘这一拍跳过，不推 0。
+3. **Petrel 盘**：VM 目录下 `petrel-disks.json` 里每块盘（`alias`、`vol`）也注册 `vmdisk` 对象（属性多 `backend=petrel` `bus=vhost-user-blk` `vol`），计数读 petrel-vhost 的每卷计数文件（见下），不发 `query-blockstats`；`vm` 的磁盘合计字段把两种来源加在一起。计数文件不存在（旧版 petrel-vhost）或超过 15 s 没更新（petrel-vhost 被 SIGKILL 后的残留）时这块盘这一拍跳过，不推 0。
 4. VM 删除时对三类对象发 GONE。删除动作目前在 hyper-agent 还是经瘦代理到 lictor 需实现时确认；若不经 lictor，由 hyper-agent 在删除成功后用同样的键发 GONE（GONE 只需要键，不要求是注册它的那个连接——实现时对照 kestrel 设计 §3 确认，不允许则改为让 lictor 提供 `metrics_forget` action 给 hyper-agent 调用）。
 
 hyper-agent 的 Petrel 部分：`kestrel_sink` 在本机是 Petrel mon 所在主机时每 30 s 调一次 `support/petrel/cluster.py::status()`，推 `petrel` / `petrelpool` / `petrelosd`；`status()` 里有阻塞调用，跑在推送线程里，不进 ZMQ 处理协程。OSD 被移出集群（CRUSH 里没有了）时发 GONE。
 
-petrel-vhost（petrel 仓 `bins/petrel-vhost`，K1 新增）：每个卷维护读写次数、字节、累计耗时（ns）与 flush 次数（原子计数），每 5 s 以 `rename` 原子替换方式写 `/run/petrel/vhost/<卷名>.stats`（一行 JSON：`{"rd_ops":…,"wr_ops":…,"rd_bytes":…,"wr_bytes":…,"rd_time_ns":…,"wr_time_ns":…,"flush_ops":…}`，进程启动时清零，卷关闭时删文件）。lictor 按盘的卷名读这个文件；计数器回绕或进程重启导致的回退由 kestrel 的 counter 处理（设计 §2.2）。不走 socket、不新增端口。
+petrel-vhost（petrel 仓 `bins/petrel-vhost`，K1 新增；一个进程服务一个卷，`--stats-dir` 默认 `/run/petrel/vhost`，传空串关闭）：每个卷维护读写次数、字节、累计耗时（ns，从请求解析完到完成，含排队）与 flush 次数（原子计数，只计成功的请求），每 5 s 以 `rename` 原子替换方式写 `/run/petrel/vhost/<转义后的卷名>.stats`（转义：保留 `[A-Za-z0-9_-]` 与非首位的 `.`，其余每字节 `%XX`；uuid 形式的卷名不变）（一行 JSON：`{"rd_ops":…,"wr_ops":…,"rd_bytes":…,"wr_bytes":…,"rd_time_ns":…,"wr_time_ns":…,"flush_ops":…}`，进程启动时清零，卷关闭时删文件）。lictor 按盘的卷名读这个文件；计数器回绕或进程重启导致的回退由 kestrel 的 counter 处理（设计 §2.2）。不走 socket、不新增端口。
 
 #### 16.3.5 ferrovirt 查询改造
 
@@ -797,7 +801,9 @@ CREATE TABLE IF NOT EXISTS alert_rule (
 
 K0 → K1 → K2 可以按顺序由不同人接力；K3 依赖 K1（要有数据）；K4 依赖 K2 与 xvirt `bed0917` 的 compute 节点验证。
 
-**进度（2026-11-23）**：K0 代码已写，**未编译、未验证**（构建机不稳定，验证等测试环境）：xvirt `packages/xvirt-kestrel`（control / postinst / conffiles）+ `assets/kestreld-xvirt.conf`（`User=kestrel` drop-in）+ `build-xvirt-debs.sh::build_kestrel`；xvirt-meta 与 hyper-agent / lictor 依赖；xvirt-init `phase_enable_monitoring`（角色判断、口令只生成一次、standalone 写 `/etc/xvirt/kestrel.conf`，排在 `enable_compute` 之前）与防火墙（放行 7410，收回 9090 / 9100）；build-deb `Jenkinsfile.deb-xvirt` 拉 kestrel 仓；kestrel `tests/sdk_python_e2e.sh`（Python SDK 端到端，待跑）。`assets/ferrovirt.env` 的 `PROMETHEUS_URL` 留到 K2 与 ferrovirt 代码一起改，K0 不动。
+**进度（2026-11-23）**：K1 代码已写，**未编译、未验证**：hyper-agent `support/kestrel_push.py`（与 lictor 同一份）、`metrics_exporter/kestrel_sink.py`（host / hostfs / hostnic / ds / guest / guestfs / plan / vmtier / petrel / petrelpool / petrelosd）、action `host_identity`、:9101 默认关闭（`XVIRT_PROM_EXPORTER=1` 才开）；lictor `monitor/vm_metrics.py`（vm / vmdisk / vmnic，含 Petrel 盘）、`delete_vm` 后注销；petrel `bins/petrel-vhost/src/stats.rs` 每卷计数文件。VM 删除时 hyper-agent 推的 `guest` / `guestfs` / `vmtier` 不注销，停推后失联、按 `retire_after` 退役。
+
+K0：代码已写，**未编译、未验证**（构建机不稳定，验证等测试环境）：xvirt `packages/xvirt-kestrel`（control / postinst / conffiles）+ `assets/kestreld-xvirt.conf`（`User=kestrel` drop-in）+ `build-xvirt-debs.sh::build_kestrel`；xvirt-meta 与 hyper-agent / lictor 依赖；xvirt-init `phase_enable_monitoring`（角色判断、口令只生成一次、standalone 写 `/etc/xvirt/kestrel.conf`，排在 `enable_compute` 之前）与防火墙（放行 7410，收回 9090 / 9100）；build-deb `Jenkinsfile.deb-xvirt` 拉 kestrel 仓；kestrel `tests/sdk_python_e2e.sh`（Python SDK 端到端，待跑）。`assets/ferrovirt.env` 的 `PROMETHEUS_URL` 留到 K2 与 ferrovirt 代码一起改，K0 不动。
 
 #### 16.3.9 验收用例
 
