@@ -198,6 +198,7 @@ AG 0..k   每 AG = 头 + 空闲 extent 树(按偏移/按长度两索引) + refco
 - **AG 大小**默认 32–64GB（按设备容量取 256–1024 个 AG），足够每个节点同时租若干个做并行分配。
 - 元数据树节点大小 mkfs 可选 4K–64K，默认 **16K**（一叶约 600 条 extent 记录；1TB、平均 256K extent 的盘约 7000 叶、3 层）。
 - 所有元数据块带 **校验和 + fsid + 位置 + 代号**，检测误写与陈旧块。
+- **mkfs 的设备保护**（2026-11-23）：对块设备写盘前，设备或其任一分区已挂载、是活动 swap、有 holders（md / dm / LVM 占用）一律拒绝；以 `O_EXCL` 独占打开（`UringOptions::exclusive`），检查之后被别人挂载 / 独占时内核直接回 EBUSY。设备开头已有 fulmar 超级块时需 `--force`；已有别的签名（GPT / MBR 分区表、ext / xfs / btrfs、LVM、md、LUKS、swap、NTFS、ISO9660）时还需 `--overwrite-foreign`。普通文件镜像（开发 / 测试）不做这些检查。
 
 ### 5.2 inode 与 extent 记录
 
