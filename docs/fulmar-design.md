@@ -438,6 +438,7 @@ QEMU 迁移中源与目的同时打开同一活盘：目的以 `inactive` 打开
 - **ENOSPC**：元数据全局保留区（≥ 1% 或 2GB）保证删除 / 释放永远能执行；活盘写 ENOSPC 时 QEMU `werror=enospc` 暂停 VM，上层扩容后恢复。
 - **崩溃恢复**：超级块最新检查点 + 重放本节点 journal；延迟释放队列持久化，幂等重放。
 - **fsck**：离线检查引用计数（扫全部树重算）、空闲树一致性、校验和；在线 scrub 只读校验元数据校验和。
+- **离线工具与运行中 fulmard 互斥**（2026-11-23）：本地模式 fulmard、离线 fsck（含 `--repair`）、mkfs 都**独占打开**设备（块设备 `O_EXCL`，镜像文件 `flock(LOCK_EX|LOCK_NB)`，`UringOptions::exclusive`），任两个同时打开时后者直接失败，避免 `--repair` 在挂载中改写 AG 树与超级块。在线 `--scrub` 只读、不独占，可对运行中的设备做。集群模式多个 fulmard 共享同一设备，不做本机独占，跨主机互斥靠 ATS / PR（§九）；对集群设备做离线 fsck 前须先让所有节点卸载。
 
 ---
 
