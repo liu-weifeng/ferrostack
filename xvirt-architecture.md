@@ -717,8 +717,8 @@ petrel-vhost（petrel 仓 `bins/petrel-vhost`，K1 新增；一个进程服务�
 | datastore 全部现有键 | `ds/<挂载段>`；`latency_read/write` 同上按点相除，`util` = `io_time_ms / 1000` |
 | **Petrel 数据存储**（`datastore.type = petrel`）`size_total` / `size_used` / `size_avail` | `petrelpool/<fsid>/<池名>`：`stored_bytes + max_avail_bytes`、`stored_bytes`、`max_avail_bytes`。池名取 `datastore` 表新列 `petrel_pool VARCHAR(64) NULL`（`create_datastore_task` 建 Petrel 数据存储时按请求的 `pool_name` / 集群默认池写入；已有行在 `ensure_schema` 后由一次 `petrel_cluster_status` 回填 `pool_name`）；fsid 从同一次状态查询取并缓存。IO 键（`iops_*` / `bps_*` / `latency_*` / `util`）返回空序列并带 `source_error: "not collected for petrel datastore"`——池级 IO 不在 1.0 采集范围（REQ-MON-003 未承诺），按盘的 IO 在 VM 监控页看 |
 
-4. kestrel 不可达或对象不存在时**不再静默返回空序列**：返回空序列的同时在响应里带 `"source_error": "<原因>"`，前端在图表上显示「监控服务不可用」而不是一片空白。
-5. 删除 PromQL 透传接口 `/api/vcenter/metrics/query` 与 `/query_range`（`controller/vcenter/metrics.rs`）和 L1 白名单（`read::metrics::validate`）；调用这两个接口的前端代码一并删除（先 `grep -rn "metrics/query" xvirt-client/src` 确认）。
+4. kestrel 不可达或对象不存在时**不再静默返回空序列**：返回空序列的同时带原因——整体取不到（kestreld 不可达、`host.machine_id` 为空）放顶层 `"source_error": "<原因>"`，个别键没有数据源（对象不存在、Petrel 数据存储的 IO、没装 guest 工具时的 swap / 负载）放 `"series_errors": {"<键>": "<原因>"}`。前端监控页状态栏显示「监控服务不可用」而不是一片空白。数据存储级 IO 只有一组（hyper-agent 已把底层设备加总），分组标签固定为 `all`。
+5. 删除 PromQL 透传接口 `/api/vcenter/metrics/query` 与 `/query_range`（`controller/vcenter/metrics.rs`）和 L1 白名单（`read::metrics::validate`）；调用这两个接口的前端代码一并删除。唯一的调用方是资源规划页的每 CPU 利用率（`xvirt_cpu_busy_ratio`，per-CPU 不进 kestrel），改为新接口 `GET /api/vcenter/host/{id}/cpu-busy` → hyper-agent action `cpu_busy`（两次读 `/proc/stat`，间隔 500 ms）。
 6. 资源概览（REQ-PLT-011）新接口 `GET /api/vcenter/overview`：主机数 / VM 数（按电源状态）来自 DB；CPU、内存总量与使用率用 `latest?class=host&field=cpu_usage|mem_total|mem_available` 按主机汇总（内存中取，不读盘）；存储总量与使用率用 `latest?class=ds`；告警汇总复用 `alert::summary`。management 角色按 center 纳管的全部主机汇总，standalone 只有本机。
 
 #### 16.3.6 ferrovirt 告警规则引擎（REQ-MON-006 / 007）
@@ -801,7 +801,9 @@ CREATE TABLE IF NOT EXISTS alert_rule (
 
 K0 → K1 → K2 可以按顺序由不同人接力；K3 依赖 K1（要有数据）；K4 依赖 K2 与 xvirt `bed0917` 的 compute 节点验证。
 
-**进度（2026-11-23）**：K1 代码已写，**未编译、未验证**：hyper-agent `support/kestrel_push.py`（与 lictor 同一份）、`metrics_exporter/kestrel_sink.py`（host / hostfs / hostnic / ds / guest / guestfs / plan / vmtier / petrel / petrelpool / petrelosd）、action `host_identity`、:9101 默认关闭（`XVIRT_PROM_EXPORTER=1` 才开）；lictor `monitor/vm_metrics.py`（vm / vmdisk / vmnic，含 Petrel 盘）、`delete_vm` 后注销；petrel `bins/petrel-vhost/src/stats.rs` 每卷计数文件。VM 删除时 hyper-agent 推的 `guest` / `guestfs` / `vmtier` 不注销，停推后失联、按 `retire_after` 退役。
+**进度（2026-11-23）**：K2 代码已写，**未编译、未验证**：ferrovirt `service/kestrel_client.rs`、`service/resource_metrics.rs` 改写（含 VM 磁盘新键、Petrel 数据存储容量、`source_error` / `series_errors`）、`service/overview.rs` + `GET /api/vcenter/overview`、`host.machine_id`（`connect_host` 后经 `host_identity` 回填）、`datastore.petrel_pool`（建 Petrel 数据存储时写入，已有行按哨兵挂载点 `/petrel/<池>` 回填）、`GET /host/{id}/cpu-busy`、删除 PromQL 透传、配置 `KESTREL_URL`（`PROMETHEUS_URL` 读到时告警并忽略）；xvirt `assets/ferrovirt.env`；xvirt-client VM 监控页加磁盘 IOPS / 吞吐 / 延迟三张图、三个监控页状态栏显示监控不可用、资源概览卡（单机主机概览页顶部 + 管理控制台根节点摘要）、主机概览页的 CPU / 内存 / 网络曲线从占位假数据换成真实数据、资源规划页改用 `cpu-busy`。compute 节点本机不跑 kestreld，其节点模式 ferrovirt 的监控接口会返回 `source_error`（界面在 center 上看）。
+
+K1：代码已写，**未编译、未验证**：hyper-agent `support/kestrel_push.py`（与 lictor 同一份）、`metrics_exporter/kestrel_sink.py`（host / hostfs / hostnic / ds / guest / guestfs / plan / vmtier / petrel / petrelpool / petrelosd）、action `host_identity`、:9101 默认关闭（`XVIRT_PROM_EXPORTER=1` 才开）；lictor `monitor/vm_metrics.py`（vm / vmdisk / vmnic，含 Petrel 盘）、`delete_vm` 后注销；petrel `bins/petrel-vhost/src/stats.rs` 每卷计数文件。VM 删除时 hyper-agent 推的 `guest` / `guestfs` / `vmtier` 不注销，停推后失联、按 `retire_after` 退役。
 
 K0：代码已写，**未编译、未验证**（构建机不稳定，验证等测试环境）：xvirt `packages/xvirt-kestrel`（control / postinst / conffiles）+ `assets/kestreld-xvirt.conf`（`User=kestrel` drop-in）+ `build-xvirt-debs.sh::build_kestrel`；xvirt-meta 与 hyper-agent / lictor 依赖；xvirt-init `phase_enable_monitoring`（角色判断、口令只生成一次、standalone 写 `/etc/xvirt/kestrel.conf`，排在 `enable_compute` 之前）与防火墙（放行 7410，收回 9090 / 9100）；build-deb `Jenkinsfile.deb-xvirt` 拉 kestrel 仓；kestrel `tests/sdk_python_e2e.sh`（Python SDK 端到端，待跑）。`assets/ferrovirt.env` 的 `PROMETHEUS_URL` 留到 K2 与 ferrovirt 代码一起改，K0 不动。
 
