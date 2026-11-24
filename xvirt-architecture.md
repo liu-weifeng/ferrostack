@@ -568,7 +568,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 068 恢复快照 | 部分 | 无“恢复后开机”；NVRAM 与 VM 配置不进快照；多盘回滚中途失败不撤回 |
 | 069 删除快照 | 部分 | 删中间节点须连子树；无“删除全部”；子树删除有缺陷 2 |
 | 070 快照树 | 实现 | 受缺陷 2 影响 |
-| 071 静默快照 | 缺失 | lictor 忽略 quiesce，界面却标“应用一致” |
+| 071 静默快照 | 缺失 | 未实现冻结；误标“应用一致”已修（缺陷 15），选项置灰 |
 | 072 内存分层快照 | 基本实现 | 默认 auto 而非 keep；恢复时不能选 keep / merge |
 | 074 CPU 热添加 | 部分 | 向导勾选不下发；编辑后余量被清（缺陷 6） |
 | 075 内存热添加 | 部分 | 向导勾选不下发；无 virtio-mem |
@@ -593,7 +593,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 12. 自动应答装机三个接口不通（iso-probe、installation-iso 为 501，answer-iso 参数形状不对），留下半成品 VM。
 13. 非 virtio 网卡设 MTU 时下发 `host_mtu`，VM 起不来 / 热插失败。
 14. 网卡 `link_state=down` 冷启动与热插不生效。
-15. 静默快照不冻结文件系统，库里却记 `quiesced=1`、界面标“应用一致”。
+15. 静默快照不冻结文件系统，库里却记 `quiesced=1`、界面标“应用一致”。（2026-11-24 已修误标：冻结实现前快照一律记崩溃一致，请求了静默的在任务消息里说明；已有记录的 `quiesced=1` 启动时一次性清掉（`ferrovirt_fixup` 记号，不重复执行）；两个创建快照对话框的静默选项置灰并注明暂不支持。真正的静默快照（REQ-VM-071 / 056）仍待 xvirt-tools 加冻结；未验证）
 16. 纳管 VM 的强制断电经 concilium 变成优雅关机（丢 force）。
 17. 运行中克隆不暂停 VM，`qemu-img convert -U` 读到的不是同一时刻的副本。
 18. 向导建 Windows VM 不发 guest OS，时钟用 UTC。
