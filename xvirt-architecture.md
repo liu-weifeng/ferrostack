@@ -561,7 +561,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 059 Tools 安装升级 | 缺失 | 无安装 ISO / 包、无升级提示 |
 | 060 转换为模板 | 缺失 | 无模板概念；管理中心“克隆为模板”现如实报未实现 |
 | 061 从模板部署 | 缺失 | 同上 |
-| 062 完整克隆 | 部分 | 管理中心右键“克隆”已接接口，单机界面仍无入口；文件盘运行中克隆不一致（缺陷 17）；Petrel 盘克隆已修（缺陷 3） |
+| 062 完整克隆 | 部分 | 管理中心右键“克隆”已接接口，单机界面仍无入口；运行中克隆一致性与 Petrel 盘克隆已修（缺陷 17、3，待验证）；NFS 上的运行中克隆不支持 |
 | 063 链接克隆 | 缺失 | — |
 | 065 Linux 定制 | 缺失 | 无 cloud-init 数据源 |
 | 067 创建快照 | 部分 | Petrel / fulmar / 混合存储写库失败（缺陷 1） |
@@ -595,7 +595,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 14. 网卡 `link_state=down` 冷启动与热插不生效。（2026-11-24 已修：hyper-agent / lictor 的 config_builder 与 guest_config 支持 `<link state='down'/>`，lictor 冷启动在 `cont` 前对断开的网卡 `set_link down`，热插后同样处理；SR-IOV VF 无 QMP 链路控制，仅告警；未验证）
 15. 静默快照不冻结文件系统，库里却记 `quiesced=1`、界面标“应用一致”。（2026-11-24 已修误标：冻结实现前快照一律记崩溃一致，请求了静默的在任务消息里说明；已有记录的 `quiesced=1` 启动时一次性清掉（`ferrovirt_fixup` 记号，不重复执行）；两个创建快照对话框的静默选项置灰并注明暂不支持。真正的静默快照（REQ-VM-071 / 056）仍待 xvirt-tools 加冻结；未验证）
 16. 纳管 VM 的强制断电经 concilium 变成优雅关机（丢 force）。（2026-11-24 已修：hyper-agent 对纳管 VM 的强制断电在 `conc resource stop` 前写一次性标记 `/run/xvirt/force-stop/<vm>`，RA stop 见到 5 分钟内的标记就 `lictor stop --force`，用完删除；power_cycle、强制删除同受益；未验证）
-17. 运行中克隆不暂停 VM，`qemu-img convert -U` 读到的不是同一时刻的副本。
+17. 运行中克隆不暂停 VM，`qemu-img convert -U` 读到的不是同一时刻的副本。（2026-11-24 已修：源 VM 运行中时，文件盘与 Petrel 盘在同一次短暂停里取时间点——Petrel 打临时快照、文件盘在原位 reflink 副本（fulmar 控制 API / `cp --reflink=always`），恢复运行后 agent 从副本拷，拷完删副本；存储不支持 reflink（如 NFS）时报错提示关机后克隆；未验证）
 18. 向导建 Windows VM 不发 guest OS，时钟用 UTC。（2026-11-24 已修时钟：单机向导请求带 `guest_os_family` / `guest_os_id`，后端给 Windows 用 localtime；已建好的 Windows VM 仍是 utc，需手工改；`hyperv` 特性仍不被 complete() / config_builder 消费，未处理；未验证）
 19. 热添加 CPU / 内存失败时任务仍成功，库里已是新值。（2026-11-24 已修：运行中热生效有任何一项失败，编辑任务报失败；CPU / 内存热添加失败时把库里的启动 vCPU / 启动内存回退到热添加前的值并重写 config.xml；网卡 / 磁盘等其它热插失败时改动保留、注明下次开机生效；未验证）
 20. 对已暂停的 VM 点“开机”，库记 running 但 guest 仍冻结；`power_cycle` 在 agent 不可达时把库错写成 shutoff。（2026-11-24 已修：暂停的 VM 点开机改走恢复（resume）；强杀重启在强杀失败时报错且不改状态；开机与各电源动作在 agent 报失败时都不再改库里的电源状态；未验证）
