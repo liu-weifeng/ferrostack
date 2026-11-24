@@ -538,12 +538,12 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 022 置备方式 | 已实现未验证（2026-11-24） | 新增 `vm_disk.provisioning`（thin / lazy / eager），向导与编辑“添加磁盘”下发、克隆沿用；文件盘 `qemu-img create -o preallocation=falloc`（延迟置零）/ `full`（立即置零），fulmar / Petrel 只有厚薄两档（lazy、eager 都按厚，Petrel `--thick`）；已有盘不能改置备方式 |
 | 023 在线扩容 | 已实现未验证（2026-11-24） | 编辑 VM 的磁盘“容量”可调大（只扩不缩）：运行中文件盘经 lictor `disk_resize`（fulmar 先控制 API `file-resize`，再对格式节点 `block_resize`）；关机时 agent 离线扩（`qemu-img resize` / fulmar `file-resize` / `petrel-ublk resize`）；运行中的 Petrel 盘不支持在线扩，需关机；在线扩失败时库里容量回退、任务报失败 |
 | 024 缓存模式 | 部分 | 已修待验证（缺陷 9） |
-| 025 磁盘 I/O 限速 | 缺失 | — |
+| 025 磁盘 I/O 限速 | 已实现未验证（2026-11-24） | `vm_disk.iotune`（JSON）：读写分开的 IOPS / 带宽基础上限 + 突发上限 + 突发时长；hyper-agent 写进 config.xml `<iotune>`，lictor 开机在 `cont` 前、运行中修改时都经 QMP `block_set_io_throttle` 下发；编辑 VM 磁盘卡片可设。Petrel（vhost-user-blk）盘不支持 |
 | 026 Discard / TRIM | 部分 | 已修待验证（缺陷 9）；前端无开关；Petrel 待确认 |
 | 030 添加 / 移除网卡 | 实现 | 运行中改端口组 / VLAN / MTU 不热生效 |
 | 031 网卡型号 | 部分 | 向导缺 e1000e；无白名单；非 virtio 设 MTU 起不来 |
 | 032 MAC 地址 | 部分 | 无 MAC 池；已有网卡 MAC 不能改 |
-| 034 网卡限速 | 缺失 | 端口组 shaping 只写 OVS external_ids |
+| 034 网卡限速 | 已实现未验证（2026-11-24） | 每块网卡流入 / 流出的平均、峰值、突发（沿用 `vm_network_interface.bandwidth_*`，KB/s）；lictor 在 tap 上用 tc 下发（流入 htb、流出 ingress police），开机建 tap 后、热添加时、运行中修改时生效；编辑 VM 网卡卡片可设（Mbit/s）。SR-IOV 直通网卡不支持；端口组 shaping 仍只写 OVS external_ids（未生效，另算） |
 | 035 链路断开 / 连接 | 部分 | 运行中、冷启动、热插均已处理（缺陷 14 待验证）；向导“开机时连接”不下发 |
 | 037 光驱与 ISO | 基本实现 | 运行中重新勾选“已连接”不生效；不能热加光驱 |
 | 038 USB 直通 | 缺失 | config_builder TODO，不生成 usb-host |
