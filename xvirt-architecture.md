@@ -574,7 +574,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 075 内存热添加 | 部分 | 向导勾选不下发；无 virtio-mem |
 | 076 磁盘热插拔 | 部分 | SATA / IDE 不拦（缺陷 4）；热插盘不带 cache / discard |
 | 077 网卡热插拔 | 实现 | 热插忽略 link_state |
-| 080 镜像导入 | 缺失 | — |
+| 080 镜像导入 | 已实现未验证（2026-11-24） | 上传：数据存储文件上传接口（原 501）实现，ferrovirt 边收边转到主机 hyper-agent 文件传输通道（5557，一次性令牌 PUT），不经 ZMQ；导入：编辑 VM 加盘选“导入磁盘镜像”，提交前在 VM 所在主机 `image_info` 探测格式（qcow2 / raw / vmdk / vhdx / vhd / vdi）与容量，新盘记 `vm_disk.import_src`，agent `update_vm` 用 `qemu-img convert` 生成（展平 backing，fulmar 上转 raw），完成后清空；导入时 update_vm 超时放宽到 1 小时。Petrel 目标不支持；新建 VM 向导里不能直接导入（建好再加盘） |
 | 085 Guest OS 清单 | 缺失 | 无清单、无 virtio-win、tools 无安装包 |
 
 高置信缺陷（已提 Cairn bug，编号对应下面的列表）：
