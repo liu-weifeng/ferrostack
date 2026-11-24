@@ -536,7 +536,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 020 添加 / 移除磁盘 | 部分 | 不能挂已有磁盘；移除不清 Petrel 卷和非所属存储上的盘文件 |
 | 021 总线类型 | 部分 | 无 NVMe（静默变 virtio-blk）；Petrel 盘总线固定 vhost-user-blk |
 | 022 置备方式 | 缺失 | 向导有下拉但不下发；lazy / eager 不分 |
-| 023 在线扩容 | 缺失 | 无接口、无 `block_resize` |
+| 023 在线扩容 | 已实现未验证（2026-11-24） | 编辑 VM 的磁盘“容量”可调大（只扩不缩）：运行中文件盘经 lictor `disk_resize`（fulmar 先控制 API `file-resize`，再对格式节点 `block_resize`）；关机时 agent 离线扩（`qemu-img resize` / fulmar `file-resize` / `petrel-ublk resize`）；运行中的 Petrel 盘不支持在线扩，需关机；在线扩失败时库里容量回退、任务报失败 |
 | 024 缓存模式 | 部分 | 已修待验证（缺陷 9） |
 | 025 磁盘 I/O 限速 | 缺失 | — |
 | 026 Discard / TRIM | 部分 | 已修待验证（缺陷 9）；前端无开关；Petrel 待确认 |
