@@ -596,7 +596,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 15. 静默快照不冻结文件系统，库里却记 `quiesced=1`、界面标“应用一致”。（2026-11-24 已修误标：冻结实现前快照一律记崩溃一致，请求了静默的在任务消息里说明；已有记录的 `quiesced=1` 启动时一次性清掉（`ferrovirt_fixup` 记号，不重复执行）；两个创建快照对话框的静默选项置灰并注明暂不支持。真正的静默快照（REQ-VM-071 / 056）仍待 xvirt-tools 加冻结；未验证）
 16. 纳管 VM 的强制断电经 concilium 变成优雅关机（丢 force）。
 17. 运行中克隆不暂停 VM，`qemu-img convert -U` 读到的不是同一时刻的副本。
-18. 向导建 Windows VM 不发 guest OS，时钟用 UTC。
+18. 向导建 Windows VM 不发 guest OS，时钟用 UTC。（2026-11-24 已修时钟：单机向导请求带 `guest_os_family` / `guest_os_id`，后端给 Windows 用 localtime；已建好的 Windows VM 仍是 utc，需手工改；`hyperv` 特性仍不被 complete() / config_builder 消费，未处理；未验证）
 19. 热添加 CPU / 内存失败时任务仍成功，库里已是新值。
 20. 对已暂停的 VM 点“开机”，库记 running 但 guest 仍冻结；`power_cycle` 在 agent 不可达时把库错写成 shutoff。
 21. 快照回滚、删子树中途失败不撤回，留下混合状态。
