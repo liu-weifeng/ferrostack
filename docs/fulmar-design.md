@@ -413,6 +413,8 @@ QEMU memtier/backing-fulmar.c:
   4. **不 panic、不重启主机**。恢复连通后 `fulmard` 以新 epoch 重新加入，VM 由 hyper-agent 决定在原地恢复（若尚未被别处拉起）或已被 HA 接管则销毁。
 - **幸存者侧 fence（兜底，解决"僵尸 IO"）**：存储支持 SCSI-3 PR / NVMe Reservation 时（`uring` 后端用块层统一的 `IOC_PR_REGISTER` / `IOC_PR_PREEMPT` ioctl，SCSI 与 NVMe 同一接口），每节点注册 key；判死后幸存者 `PREEMPT` 其 key，存储层拒绝它一切后续写。不支持 PR 时，依赖时序保证：自 fence 的触发点（自己 `hb-dead/2` 周期写不进心跳）严格早于幸存者接管点（`hb-dead` 周期 + 恢复锁），并把 NVMe 命令超时设短于该差值。
 - **恢复**：拿到"恢复锁(ATS)"的幸存者重放死节点 journal → 回收其 AG 租约 / inode 所有权 → 执行其未完成的延迟释放 → 标记槽位可用。journal ≤ 512MB，目标 ≤ 2s。
+- **自 fence 按时间计、独立看门狗**（2026-11-23）：原来按「心跳线程里连续写失败次数」判，单次写可能卡到 IO 超时甚至不返回，3 次失败可能要 ~9s，晚于对端 6s 接管；心跳线程被卡住时根本不会自 fence。现在独立看门狗线程按**最后一次成功心跳写的提交时刻 T** 计时：距 T 超过 `self_fence_after × hb_interval` 即完整自 fence（停心跳、停 DLM、块后端拒绝提交）。对端最早在 T + `hb_dead × hb_interval` 接管，所以启动时校验 `self_fence_after × hb_interval + 看门狗步长(hb_interval/4) + io_timeout < hb_dead × hb_interval`，且 `self_fence_after ≥ 2`（期限只有一个周期时正常抖动就会误 fence）。默认 3s + 0.25s + 2s < 6s。
+- **死节点恢复不在心跳线程里跑**（2026-11-23）：心跳线程只判死、排队；独立恢复线程执行 PR 抢占与 journal 重放并按心跳周期重试。否则重放大 journal、等 Namespace 锁（最长 10s）期间执行恢复的节点自己心跳停写，会被别人判死、被自己的看门狗 fence。
 - 时间目标：检测 ≈ 6–7s，接管 ≤ 10s；可按场景调 `hb-interval`/`hb-dead`。
 
 ### 9.6 在线迁移时的所有权交接
