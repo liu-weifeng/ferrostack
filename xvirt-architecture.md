@@ -597,7 +597,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 16. 纳管 VM 的强制断电经 concilium 变成优雅关机（丢 force）。
 17. 运行中克隆不暂停 VM，`qemu-img convert -U` 读到的不是同一时刻的副本。
 18. 向导建 Windows VM 不发 guest OS，时钟用 UTC。（2026-11-24 已修时钟：单机向导请求带 `guest_os_family` / `guest_os_id`，后端给 Windows 用 localtime；已建好的 Windows VM 仍是 utc，需手工改；`hyperv` 特性仍不被 complete() / config_builder 消费，未处理；未验证）
-19. 热添加 CPU / 内存失败时任务仍成功，库里已是新值。
+19. 热添加 CPU / 内存失败时任务仍成功，库里已是新值。（2026-11-24 已修：运行中热生效有任何一项失败，编辑任务报失败；CPU / 内存热添加失败时把库里的启动 vCPU / 启动内存回退到热添加前的值并重写 config.xml；网卡 / 磁盘等其它热插失败时改动保留、注明下次开机生效；未验证）
 20. 对已暂停的 VM 点“开机”，库记 running 但 guest 仍冻结；`power_cycle` 在 agent 不可达时把库错写成 shutoff。（2026-11-24 已修：暂停的 VM 点开机改走恢复（resume）；强杀重启在强杀失败时报错且不改状态；开机与各电源动作在 agent 报失败时都不再改库里的电源状态；未验证）
 21. 快照回滚、删子树中途失败不撤回，留下混合状态。
 
