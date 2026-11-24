@@ -417,7 +417,7 @@ qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写�
 | REQ-VM-030 / 077 网卡增删、热插 | 实现 | 缺陷 1、缺陷 4 |
 | REQ-VM-031 网卡型号 | 实现 | 后端无白名单，任意字符串直传 QEMU；`driver_queues` 不生成多队列 |
 | REQ-VM-033 网卡 VLAN | 缺失 | 缺陷 2 |
-| 分布式交换机 | 部分 | 失败主机不重试 / 不对账；无增删成员主机 API；新主机不自动加入 |
+| 分布式交换机 | 已实现未验证（2026-11-24） | 见 §9.3：成员状态（ok / failed / excluded）、增删成员、失败重试与周期对账、绑定集群后新主机自动加入；成员上行不能原地改（移除后重加），主机移出集群不自动拆桥 |
 | SR-IOV | 已实现未验证（2026-11-24） | 见 §9.2：PF 开 VF → 自动生成 SR-IOV 交换机 → VM 网卡分 VF、vfio-pci 直通，可热插拔；带 VF 的 VM 不能在线迁移 / 内存快照；无 VF 级限速、trust、端口组 |
 
 缺陷（高置信）：
@@ -445,6 +445,20 @@ qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写�
 - 只有 access VLAN（硬件打 / 剥标签）；trunk、端口组、安全策略、流量整形都不适用。没有 VF 限速、`trust`、链路状态控制。
 - 主机须开启 IOMMU（`intel_iommu=on` / `amd_iommu=on`），否则启动时报错。VM 关机后 VF 留在 vfio-pci 上。
 - 管理中心经 `SYNC_NETWORKS` 镜像计算节点的 VF 行时保留两边的分配关系（`vm_uuid` 随导出带上，缺省沿用本库）。
+
+### 9.3 分布式交换机成员管理（2026-11-24 实现，未验证）
+
+模型不变：控制面一行 `virtual_switch(switch_type='distributed', host_id=NULL)`，每台成员主机上一座同名桥，成员记在 `virtual_switch_host`。补齐的部分在 ferrovirt `service/dvs_member.rs`：
+
+- **成员状态**：`virtual_switch_host` 加 `status`（`ok` / `failed` / `excluded`）、`uplinks`（期望上行，逗号分隔）、`last_error`、`retries`、`updated_at`。建交换机时落地失败的主机也记成员行（`failed`），以前直接丢掉、之后不再管。
+- **增删成员**：`POST /api/vcenter/network/{network}/members {host, uplinks}`（任务 `addDistributedSwitchMember`）、`DELETE …/members/{host}`（任务 `removeDistributedSwitchMember`）。加成员前检查上行网卡没被本主机别的交换机占用；移除前检查该主机上没有 VM 网卡连着这台交换机，且不是最后一个成员（最后一个请直接删交换机）。成员原本是 `ok` 时拆桥失败会报错、保留成员；原本 `failed` 的拆桥失败不挡。
+- **落地 = 幂等重做**：调 agent `create_bridge`（桥在就只补上行），按期望上行重写该主机的 `virtual_switch_uplink`，再把交换机的全部端口组重放一遍（`port_group_apply`）。
+- **重试 / 对账**：后台每 2 分钟一轮（`reconcile_loop`），对 `failed` 成员按退避重试（第 n 次失败后等 min(2n, 30) 分钟，主机离线时跳过）；`POST …/members/reconcile`（任务 `reconcileDistributedSwitch`）立即重做、忽略退避。
+- **绑定集群**：建交换机时可带 `cluster`（不给 `members` 时用集群全部启用主机）和 `default_uplinks`；已有交换机用 `PUT …/cluster {cluster, default_uplinks}` 绑定 / 解绑。绑定后集群里还不是成员的主机自动加入（上行取 `default_uplinks` 里该主机实际有、且空闲的网卡）；主机经 `assign_host` 进集群时立即触发一次。主机仍在集群里却被手动移除的记 `excluded`，不会被自动加回，重新添加即恢复。解绑不拆已有成员；主机移出集群也不自动拆桥（以免断 VM 网络）。
+- **读**：`GET …/members` 返回成员、状态、期望上行、最近错误；绑定了集群时附上集群里待加入的主机（`pending`）。交换机详情的 `members[]` 也带 `status` / `last_error`，并多了 `cluster` / `default_uplinks`。
+- **前端**：管理中心里分布式交换机（网络节点 `switch_type='distributed'`）的摘要页顶部加了成员面板，可添加 / 移除主机、重试失败成员、绑定集群。设计稿里的 `SummaryDVSwitch` 仍是假数据，库存树也不产生 `dvswitch` 节点。
+
+限制：成员上行不能原地修改（移除后重新添加）；Linux 桥成员在 agent 侧只增不减上行；对账只补"缺桥 / 缺上行 / 端口组"，不检测主机上被手工改掉的桥配置。
 
 ## 10. VM 生命周期关键链路
 
@@ -1107,7 +1121,7 @@ fulmard 不占 TCP 端口：控制 API 走本机 unix socket，数据走共享�
 - **`xvirtctl` 不管 `xvirt-resource-plan`**。
 - ~~**SR-IOV VF 分配未接入 VM 创建**~~：2026-11-24 已接入（§9.2），未验证。
 - **VM 存储与 1.0 边界不符**（§8.2.7）：所属存储不记库、NVRAM 在主机本地、无 fulmar 数据存储类型、带 Petrel 盘的 VM 不能快照、克隆 Petrel 盘丢数据、迁移丢 NVRAM 等文件。
-- **网络数据面缺陷**（§9.1）：Linux Bridge 上 VM 起不来、VLAN 不生效、`hardware_scan` 会清空主机网络记录、无主机 bond 与流量分离。
+- **网络数据面缺陷**（§9.1）：Linux Bridge 上 VM 起不来、VLAN 不生效、`hardware_scan` 会清空主机网络记录、无主机 bond 与流量分离。（2026-11-24 均已修，另补 SR-IOV §9.2、分布式交换机成员管理 §9.3，均未验证）
 - **前端 i18n 未完成**：表单和向导正文仍有大量硬编码中文。
 - **大量能力处于"已实现未验证"**：资源规划与放置、内存分层快照、CDP 改名、`memtier-shared-backing` 跨主机迁移都缺真机端到端验证。
 - **兼容矩阵缺失**：memtier、petrel、热插拔、在线迁移、资源规划（cgroup v2 cpuset 分区、RDT、hugetlb）都依赖 QEMU / 内核 / 硬件条件，没有统一的兼容矩阵文档。
