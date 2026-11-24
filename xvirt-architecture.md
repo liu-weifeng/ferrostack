@@ -400,7 +400,7 @@ qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写�
 
 - network 句柄已按"uuid 优先，回退 db id"解析，路由为 `/api/vcenter/network/{network}`。
 - VM 创建时，提交的 network 会被解析为实际 `source_dev`，避免 agent 生成配置时出现空 bridge。
-- SR-IOV VF 目前只做扫描同步和计数，**还没接入 VM 创建**。
+- SR-IOV 直通已接入 VM 创建 / 加网卡（2026-11-24，见 §9.2）。
 
 ### 9.1 代码现状与差距（2026-11-24 按 kairos/main 核对）
 
@@ -418,7 +418,7 @@ qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写�
 | REQ-VM-031 网卡型号 | 实现 | 后端无白名单，任意字符串直传 QEMU；`driver_queues` 不生成多队列 |
 | REQ-VM-033 网卡 VLAN | 缺失 | 缺陷 2 |
 | 分布式交换机 | 部分 | 失败主机不重试 / 不对账；无增删成员主机 API；新主机不自动加入 |
-| SR-IOV | 仅扫描 | 未接入 VM 创建 |
+| SR-IOV | 已实现未验证（2026-11-24） | 见 §9.2：PF 开 VF → 自动生成 SR-IOV 交换机 → VM 网卡分 VF、vfio-pci 直通，可热插拔；带 VF 的 VM 不能在线迁移 / 内存快照；无 VF 级限速、trust、端口组 |
 
 缺陷（高置信）：
 
@@ -429,6 +429,22 @@ qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写�
 5. **`delete_bridge` 永远报成功**（`hyper-agent/hyper_agent/controller/network.py:101-109`），DB 照删。
 6. **MAC 无唯一性校验**：`52:54:00` + 随机 24 位，约 4.8k 网卡时碰撞概率约 50%；用户自填 MAC 不校验格式与重复。
 7. **在线迁移不预检目的端网络**：目的端缺桥 / 端口组时到 `migrate_incoming` 建 tap 才失败（源 VM 不受影响，但报错笼统）。
+
+### 9.2 SR-IOV 网卡直通（2026-11-24 实现，未验证）
+
+链路：
+
+1. **开 VF**：物理网卡页对 PF「设置 VF」→ `PUT /api/vcenter/host/{host}/nics/{nic}/sriov {num_vfs}`（异步任务 `setSriovVfs`）→ hyper-agent `set_sriov_vfs`（`support/sriov_util.py`）写 `sriov_numvfs`（改数量先归零），并在 `/etc/udev/rules.d/70-xvirt-sriov.rules` 按 PF 的 PCI 地址落规则，重启保持。PF 有 VF 分给 VM 时控制面拒绝；agent 也会检查有无 QEMU 正在直通该 PF 的 VF。
+2. **SR-IOV 交换机**：任务完成后重扫网卡，`host_sync::apply_scanned_nics` 调 `vm_sriov::sync_host`：开了 VF 的 PF 自动生成 `virtual_switch(kind='SRIOV', name='sriov-<PF>', backend=<PF>)`，VF 落 `sriov_vf`；关掉 VF 后删空闲 VF 行，没有已分配的就软删交换机。网卡列表里 PF / VF 角色统一存大写。
+3. **分 VF**：VM 网卡选 SR-IOV 交换机（前端下拉里的「SR-IOV 直通」项，请求为 `{type:"sriov", network:<交换机 uuid>}`；`network` 直接写 SR-IOV 交换机也行）。建 VM 时先把这类网卡改成 `type=hostdev`，所有校验过后、下发前再从该交换机分空闲 VF（`sriov_vf.status='ALLOCATED'`，记 `vm_uuid`）；网卡落库为 `type=hostdev, source_dev=<VF PCI>, source_network=<交换机名>`。建 VM 失败、删网卡、删 VM 时释放；漏掉的由重扫兜底回收（分配超过 1 小时且没有任何网卡引用）。VF 跟着 VM 走，开关机不变。交换机须在 VM 所在主机上。
+4. **启动 / 热插**：lictor `support/sriov.py` 经 PF 设 VF 的 MAC、VLAN、`spoofchk on`（`ip link set <pf> vf <n> ...`），把 VF 绑到 vfio-pci；QEMU 以 `-device vfio-pci,host=<VF>,id=net<N>` 直通，没有 netdev。热插同样先准备 VF 再 `device_add vfio-pci`，热拔走普通的 `device_del`。
+
+限制：
+
+- 带 VF 的 VM 不能在线迁移、不能打内存快照（vfio 是 QEMU 迁移阻断项）；只做磁盘快照与同主机存储迁移。克隆时从目标主机上同名 SR-IOV 交换机另分 VF。
+- 只有 access VLAN（硬件打 / 剥标签）；trunk、端口组、安全策略、流量整形都不适用。没有 VF 限速、`trust`、链路状态控制。
+- 主机须开启 IOMMU（`intel_iommu=on` / `amd_iommu=on`），否则启动时报错。VM 关机后 VF 留在 vfio-pci 上。
+- 管理中心经 `SYNC_NETWORKS` 镜像计算节点的 VF 行时保留两边的分配关系（`vm_uuid` 随导出带上，缺省沿用本库）。
 
 ## 10. VM 生命周期关键链路
 
@@ -1089,7 +1105,7 @@ fulmard 不占 TCP 端口：控制 API 走本机 unix socket，数据走共享�
 - **纯 compute 角色不启 ferrovirt**（2026-11-22 核对属实）：xvirt-init 对 compute 不启 MariaDB 与 ferrovirt，center 经 5570 ENROLL / PROBE 被拒，纯 compute 节点无法纳管；已在 xvirt `bed0917` 修复（compute 也启 MariaDB + node 模式 ferrovirt，`xvirtctl role` 改写 `ROLE=` 行），待出 ISO 后由 center 纳管一台 compute 节点验证。另：经注册 token 纳管的路径不存在，只有地址 + root 凭据。
 - **concilium 迁移路径不通**：RA → `lictor migrate` → `migrate_vm` 未实现；conciliumd unit 没有 `After=xvirt-lictor`，只靠 `xvirtctl` 的启动顺序。
 - **`xvirtctl` 不管 `xvirt-resource-plan`**。
-- **SR-IOV VF 分配未接入 VM 创建**。
+- ~~**SR-IOV VF 分配未接入 VM 创建**~~：2026-11-24 已接入（§9.2），未验证。
 - **VM 存储与 1.0 边界不符**（§8.2.7）：所属存储不记库、NVRAM 在主机本地、无 fulmar 数据存储类型、带 Petrel 盘的 VM 不能快照、克隆 Petrel 盘丢数据、迁移丢 NVRAM 等文件。
 - **网络数据面缺陷**（§9.1）：Linux Bridge 上 VM 起不来、VLAN 不生效、`hardware_scan` 会清空主机网络记录、无主机 bond 与流量分离。
 - **前端 i18n 未完成**：表单和向导正文仍有大量硬编码中文。
