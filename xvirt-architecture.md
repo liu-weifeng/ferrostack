@@ -343,6 +343,14 @@ qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写�
 3. 带快照的盘在 fulmar / xfs / ocfs2 / Petrel 之间迁移走跨存储快照链迁移（§11.3，REQ-STO-029）；在线迁移带快照链的限制沿用 §11.3。
 4. 迁移中止只清理目的端**本次新建**的内容；所属存储在共享存储上时不得删除 VM 目录。
 
+**1.0 实现范围（2026-11-24）：**
+
+- 接口：`GET /api/vcenter/vm/{vm}/migrate/options?dest_host=` 给候选（当前所属存储及目的主机能否访问、`owner_required`、所属存储候选、每块盘的当前位置与可选目标）；`POST /api/vcenter/vm/{vm}/migrate` 新增 `owner_datastore` 与 `disks: [{disk, datastore}]`。
+- 更改主机：`{dest_host, owner_datastore?}`，盘须全在 Petrel（跨主机同时搬盘即无共享存储迁移，REQ-CLU-013，不在 1.0）。
+- 更改存储（同主机）：`{disks, owner_datastore?, online}`，按盘只在文件型数据存储（fulmar / NFS / xfs）之间；Petrel ↔ 文件盘的带快照互迁仍走整机 `dest_datastore`（所有盘一起）。
+- 换所属存储时搬 `config.xml`、`nvram.fd`、`placement.json`、`memtier.json`、`petrel-disks.json`、`memtier-backing.raw`、`snapshots/`，快照表里的元数据 / 内存文件路径随之改写；源目录的 `config.xml` 归档为 `config.xml.migrated`，其余源文件保留待人工清理。
+- 代码：ferrovirt `service/migrate_plan.rs`（候选与校验）、`snapshot_migrate::migrate_storage_adv_task`、`vm_migrate`；前端管理端迁移向导已接真实接口。
+
 **HA 与克隆：**
 
 - 主机故障自动重启（REQ-CLU-005）只对所属存储为共享存储（NFS、fulmar 集群）且盘都在共享存储 / Petrel 上的 VM 生效，开启保护时校验。
@@ -361,11 +369,11 @@ qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写�
 #### 8.2.7 代码现状与差距（2026-11-24 按 kairos/main 核对）
 
 1. 所属存储类型只用黑名单挡了 `petrel`（`ferrovirt/src/service/vm_create.rs:1399`），没有白名单；agent `create_vm`（`hyper-agent/hyper_agent/vm/guest.py:67-82`）不查类型也不查挂载，挂载缺失时会把目录建在根文件系统上。lvm 仍可创建（`storage_net.rs:381-456`）。
-2. 所属存储不记库，至少五处从磁盘路径反推（`write.rs:45-63` 的 SQL 没排除光驱、`vm_update.rs:1027-1032`、`snapshot.rs:106-119`、`vm_create.rs:1178-1207`、`snapshot_migrate.rs:644`）；只有 Petrel 盘的 VM 编辑 / 快照 / 克隆会失败或定位错。
-3. NVRAM 在主机本地 `/var/lib/libvirt/qemu/nvram/<uuid>_VARS.fd`（`vm_create.rs:33,212`），迁移、克隆、HA 后 UEFI 变量被模板重置，删除 VM 时残留。
+2. ~~所属存储不记库~~（2026-11-24 已改：`vm_config.owner_datastore_uuid / _seg`，ferrovirt `service/vm_owner.rs`）。原问题：至少五处从磁盘路径反推（`write.rs:45-63` 的 SQL 没排除光驱、`vm_update.rs:1027-1032`、`snapshot.rs:106-119`、`vm_create.rs:1178-1207`、`snapshot_migrate.rs:644`）；只有 Petrel 盘的 VM 编辑 / 快照 / 克隆会失败或定位错。
+3. ~~NVRAM 在主机本地~~（2026-11-24 已改：放 VM 目录 `nvram.fd`，老 VM 启动时接续旧文件）。原问题：NVRAM 在主机本地 `/var/lib/libvirt/qemu/nvram/<uuid>_VARS.fd`（`vm_create.rs:33,212`），迁移、克隆、HA 后 UEFI 变量被模板重置，删除 VM 时残留。
 4. 全栈没有 `fulmar` 数据存储类型（ferrovirt、hyper-agent 注册表、lictor、xvirt-client 均无）；fulmar 本身集群模式代码未编译未测试。
 5. 快照：只有 xfs / ocfs2 / btrfs 纯 reflink 可用；任何带 Petrel 盘或混合存储的 VM 都落到未实现的 `V1_QCOW2_CHAIN`（`vm_create.rs:964-984`、`snapshot.rs:279-288`），Petrel 卷快照原语 ferrovirt 没调用。自动化用例 `stage60.vm.snapshot` 因此跳过。NFS 盘拒绝快照的提示也要按 §8.2.3 明确。
-6. 在线迁移只接受"盘全在 Petrel"的 VM，没有按盘选存储和选所属存储的选项；目的端 VM 目录取该主机第一个 `xfs/local` 数据存储（`vm_migrate.rs:64-78,99-114`），不支持所属存储在 NFS；只带 `config.xml` 与 `petrel-disks.json`（`lictor/lictor/vm/migration.py:85-124`），丢 NVRAM / placement / memtier / snapshots；源目录不删；所属存储共享时 abort 的 `rmtree` 会删掉共享目录。
+6. （2026-11-24 已加迁移高级选项与所属存储共享判断，见 §8.2.4「1.0 实现范围」；跨主机仍要求盘全在 Petrel。）原问题：在线迁移只接受"盘全在 Petrel"的 VM，没有按盘选存储和选所属存储的选项；目的端 VM 目录取该主机第一个 `xfs/local` 数据存储（`vm_migrate.rs:64-78,99-114`），不支持所属存储在 NFS；只带 `config.xml` 与 `petrel-disks.json`（`lictor/lictor/vm/migration.py:85-124`），丢 NVRAM / placement / memtier / snapshots；源目录不删；所属存储共享时 abort 的 `rmtree` 会删掉共享目录。
 7. 克隆 Petrel 盘会变成 VM 目录里的空 qcow2（`vm_create.rs:1229-1237`），数据丢失。
 8. HA：ferrovirt 不向 concilium 注册 VM 资源；lictor 靠扫 `/datastore/*/<uuid>/config.xml` 找 VM，隐含要求 VM 目录在共享存储上。
 9. 前端所属存储（"位置"）候选是 `{ext4, xfs, btrfs, ocfs2, gfs2, nfs}`（`xvirt-client/src/components/wizards/NewVmWizard.jsx:54-55`），与后端不一致，没有 fulmar；迁移对话框没有高级选项。
