@@ -265,7 +265,8 @@ qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写�
 **当前状态（2026-11-20）**：子仓 `fulmar` main `f76e2fc`，11 个 crate + 4 个可执行 + libfulmar。
 
 - 本地模式的 mkfs / fulmard / 共享内存环 / libfulmar C ABI / CLI / fsck 链路代码已写完，**还没编译、没测试**。
-- 集群模式（P3）只有骨架；hyper-agent、QEMU、lictor 一侧都没动，QEMU 里也还没有 `backing-fulmar.c`。
+- 集群模式（P3）只有骨架。
+- **2026-11-24 全链路接入（未编译未测试）**，约定见 `docs/fulmar-design.md` §13.1：fulmard FUSE 网关（`--fuse-mount /datastore/<段>`，可写、活盘禁写）与 `fulmard@.service`；libfulmar 安装脚本与 `fulmar.pc`；QEMU `block/fulmar.c`（qemu 分支 `fulmar-blockdrv`，基于 stable-11.1-dev）；hyper-agent 数据存储后端 `fulmar.py`（mkfs / 起服务 / 集群导入 / 删除）与盘文件经控制 API 建删；lictor 生成 `driver=fulmar` 的 blockdev、快照走控制 API reflink、迁移放开集群 fulmar 盘；ferrovirt 数据存储类型 `fulmar`（本地 / 集群）、快照 backend `V2_FULMAR_REFLINK`、建盘强制 raw；前端建数据存储向导。QEMU 里还没有 memtier 的 `backing-fulmar.c`（memtier 换出文件暂经 FUSE）。
 - 分期：P0 本地原型 → P1 memtier + 工具链 + hyper-agent datastore → P2 性能档（vhost-user-blk、SPDK）→ P3 集群 → P4 运维。
 - 待拍板六项（设计稿 §十七）：实现语言（骨架已按 Rust 写）、默认 `cow_chunk`、FUSE 是否可写、集群槽数、memtier 直通是否默认、SPDK 是否进本期。
 
@@ -374,10 +375,10 @@ qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写�
 
 #### 8.2.7 代码现状与差距（2026-11-24 按 kairos/main 核对）
 
-1. 所属存储类型只用黑名单挡了 `petrel`（`ferrovirt/src/service/vm_create.rs:1399`），没有白名单；agent `create_vm`（`hyper-agent/hyper_agent/vm/guest.py:67-82`）不查类型也不查挂载，挂载缺失时会把目录建在根文件系统上。lvm 仍可创建（`storage_net.rs:381-456`）。
+1. 所属存储类型只用黑名单挡了 `petrel`（`ferrovirt/src/service/vm_create.rs:1399`），没有白名单；agent `create_vm`（`hyper-agent/hyper_agent/vm/guest.py:67-82`）不查类型也不查挂载，挂载缺失时会把目录建在根文件系统上。~~lvm 仍可创建~~（2026-11-24 已去掉创建入口，存量 lvm 数据存储仍可列出、删除）。
 2. ~~所属存储不记库~~（2026-11-24 已改：`vm_config.owner_datastore_uuid / _seg`，ferrovirt `service/vm_owner.rs`）。原问题：至少五处从磁盘路径反推（`write.rs:45-63` 的 SQL 没排除光驱、`vm_update.rs:1027-1032`、`snapshot.rs:106-119`、`vm_create.rs:1178-1207`、`snapshot_migrate.rs:644`）；只有 Petrel 盘的 VM 编辑 / 快照 / 克隆会失败或定位错。
 3. ~~NVRAM 在主机本地~~（2026-11-24 已改：放 VM 目录 `nvram.fd`，老 VM 启动时接续旧文件）。原问题：NVRAM 在主机本地 `/var/lib/libvirt/qemu/nvram/<uuid>_VARS.fd`（`vm_create.rs:33,212`），迁移、克隆、HA 后 UEFI 变量被模板重置，删除 VM 时残留。
-4. 全栈没有 `fulmar` 数据存储类型（ferrovirt、hyper-agent 注册表、lictor、xvirt-client 均无）；fulmar 本身集群模式代码未编译未测试。
+4. ~~全栈没有 `fulmar` 数据存储类型~~（2026-11-24 已全链路接入，见 §8.1；未编译未测试）。
 5. （2026-11-24 已改为按盘快照并接上 Petrel 卷快照，见 §8.2.3「1.0 实现」；Petrel 盘只支持关机时。）原问题：快照：只有 xfs / ocfs2 / btrfs 纯 reflink 可用；任何带 Petrel 盘或混合存储的 VM 都落到未实现的 `V1_QCOW2_CHAIN`（`vm_create.rs:964-984`、`snapshot.rs:279-288`），Petrel 卷快照原语 ferrovirt 没调用。自动化用例 `stage60.vm.snapshot` 因此跳过。NFS 盘拒绝快照的提示也要按 §8.2.3 明确。
 6. （2026-11-24 已加迁移高级选项与所属存储共享判断，见 §8.2.4「1.0 实现范围」；跨主机仍要求盘全在 Petrel。）原问题：在线迁移只接受"盘全在 Petrel"的 VM，没有按盘选存储和选所属存储的选项；目的端 VM 目录取该主机第一个 `xfs/local` 数据存储（`vm_migrate.rs:64-78,99-114`），不支持所属存储在 NFS；只带 `config.xml` 与 `petrel-disks.json`（`lictor/lictor/vm/migration.py:85-124`），丢 NVRAM / placement / memtier / snapshots；源目录不删；所属存储共享时 abort 的 `rmtree` 会删掉共享目录。
 7. 克隆 Petrel 盘会变成 VM 目录里的空 qcow2（`vm_create.rs:1229-1237`），数据丢失。

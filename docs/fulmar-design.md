@@ -464,7 +464,7 @@ QEMU `block/fulmar.c` 把 `block_status` 直接映射给 `bdrv_co_block_status`�
 
 ### 12.3 POSIX 网关（FUSE）
 
-只服务管理用途：qemu-img 转换导入、ISO 上传、浏览、备份工具读取快照、`snapshot-helper` 写内存快照文件。读写经 `fulmard`，性能够用即可；活盘**禁止**经 FUSE 写（打开即拒绝，防绕过所有权）。
+只服务管理用途：qemu-img 转换导入、ISO 上传、浏览、备份工具读取快照、`snapshot-helper` 写内存快照文件。读写经 `fulmard`，性能够用即可；活盘**禁止**经 FUSE 写（打开即拒绝，防绕过所有权）。1.0 起 VM 目录（config.xml、NVRAM、快照元数据）也经 FUSE 放在 fulmar 上，挂载点 `/datastore/<段>`，约定见 §13.1。
 
 ### 12.4 工具
 
@@ -485,6 +485,43 @@ QEMU `block/fulmar.c` 把 `block_status` 直接映射给 `bdrv_co_block_status`�
 | `xvirt-blockdiff` / `xvirt-snapmig` / `cdp` | 可不改（`fulmar fiemap` 兼容）；二期切 `fulmar diff` 提速 |
 | 资源规划 | `fulmard` 轮询 IO 线程的核与环用 hugepage 从 `spdk` 池划拨（建议改称存储池）；eventfd 模式不占池核。启用 SPDK 档时再加 vfio 绑定与 SPDK 大页 |
 | OCFS2 → Fulmar 迁移 | 同机加一块 Fulmar datastore，用现有跨 datastore 快照链迁移（根全量 + 逐层 `merge`）或 drive-mirror 在线迁移；OCFS2 只读保留直至清空 |
+
+### 13.1 1.0 接入约定（2026-11-24）
+
+xvirt 1.0 把 fulmar 作为 VM 所属存储与文件盘存储（xvirt-architecture.md §8.2）。各组件按下面的约定对接，任何一方改约定都要先改这里。
+
+**运行形态**
+
+- 每个 fulmar 数据存储一个 `fulmard` 实例，systemd 模板单元 `fulmard@<段>.service`，参数来自 `/etc/fulmar/<段>.conf`（`DEVICE=`、`MODE=local|cluster`、`NODE=`（集群槽号）、`EXTRA_ARGS=`）。`<段>` 即 `/datastore/<段>` 的末段（ferrovirt 里的 datastore 挂载段）。
+- 控制 socket `/run/fulmar/<段>.sock`，数据 socket `/run/fulmar/<段>.data.sock`（`fulmar-ctl` 默认路径）。
+- `fulmard --fuse-mount /datastore/<段>`：挂载完成后把文件系统经 FUSE 网关挂到该目录；退出时卸载。hyper-agent 以该挂载点是否为 mountpoint 判断数据存储在线。
+- 路径映射：FUSE 路径 `/datastore/<段>/<rel>` ↔ fulmar 内路径 `/<rel>`。VM 目录即 `/<vm-uuid>/`。
+
+**FUSE 网关（拍板 §十七-3：可写，活盘除外）**
+
+- 支持 lookup / getattr / setattr（truncate、mode/times 忽略或存档）/ readdir / mkdir / rmdir / create / open / read / write / flush / fsync / release / unlink / rename / statfs。
+- 普通文件（`Regular`）、目录可读写：VM 目录下的 `config.xml`、`placement.json`、`nvram.fd`、`snapshots/*.json`、内存快照文件都在这里。QEMU 的 pflash 直接以普通文件打开 `nvram.fd`。
+- 任何文件（`Disk` / `Pinned` / `Regular`）：可读；**有数据会话打开时（活盘）FUSE 写打开 / 截断 / 删除 / 改名返回 `EBUSY`**；无会话时可写（qemu-img 导入）。经迁移工具（xvirt-snapmig、drive-mirror）经 FUSE 写进来的盘是 `Regular`，QEMU 数据会话同样能打开。经 FUSE 新建的文件一律是 `Regular`，盘文件由控制 API `file-create kind=disk` 建。
+- 不支持 mmap 共享写、xattr、硬链接、符号链接（返回 `ENOTSUP`）。
+
+**盘文件与 QEMU**
+
+- fulmar 上的 VM 盘一律 **raw**（COW / 快照由 fulmar 自身完成，不用 qcow2），路径 `/datastore/<段>/<vm-uuid>/<disk-uuid>.raw`，由 hyper-agent 经控制 API `file-create {path:"/<vm-uuid>/<disk-uuid>.raw", kind:"disk", size, thick}` 建。
+- QEMU 块驱动 `driver=fulmar`，选项 `datastore=<段>`（数据 socket 取默认路径）或 `socket=<路径>`，`path=/<vm-uuid>/<disk-uuid>.raw`。lictor 对 config.xml 里源路径落在 fulmar 数据存储上的盘（判据：`/run/fulmar/<段>.data.sock` 存在）生成 `-blockdev '{"driver":"fulmar","datastore":"<段>","path":"/…","node-name":…,"cache":{"direct":true,"no-flush":false}}'`，不再走 file 驱动。
+- 驱动实现：libfulmar 异步接口 + eventfd（`aio_set_fd_handler`），`bdrv_co_preadv/pwritev/flush/pdiscard/pwrite_zeroes/block_status/getlength/truncate`；迁移交接 `bdrv_inactivate` → `fulmar_set_inactive`，`bdrv_co_invalidate_cache` → `fulmar_activate`（§9.6）。
+
+**快照、reflink、迁移**
+
+- 快照（xvirt-architecture.md §8.2.3）：盘级 backend `V2_FULMAR_REFLINK`，lictor 在 VM 已 stop（块层 drain）后调控制 API `reflink {src:"/<vm>/<d>.raw", dst:"/<vm>/<d>.raw.snap.<snap>"}`；回滚为 reflink 反向（先删 active 再 reflink）；删除为 `file-delete`。运行中可做（盘 IO 都经 fulmard，stop 后一致）。
+- 跨存储迁移、克隆：拷贝走 `qemu-img convert`（源经 FUSE 只读访问）或控制 API `reflink`（同一数据存储内）。
+- 在线迁移：fulmar 集群模式数据存储两端都挂载时，盘不搬，依赖驱动的 inactivate / activate 交接所有权。
+
+**hyper-agent 数据存储后端 `support/datastore/fulmar.py`**
+
+- `create`：校验设备未被占用 → `fulmar-mkfs --device <dev> [--mode cluster --node-slots N]` → 写 `/etc/fulmar/<段>.conf` → `systemctl enable --now fulmard@<段>` → 等 `/datastore/<段>` 成为挂载点。
+- `import`（集群模式其他主机）：写 conf（本机槽号）→ `systemctl enable --now fulmard@<段>`，不 mkfs。
+- `delete`：`systemctl disable --now fulmard@<段>` → 删 conf；可选擦除签名。
+- 容量：控制 API `fs-stat`。
 
 ---
 
@@ -558,7 +595,7 @@ QEMU `block/fulmar.c` 把 `block_status` 直接映射给 `bdrv_co_block_status`�
 
 1. **实现语言**：Rust（与 petrel 同栈，直接复用其 io_uring / vhost-user-blk / rust-vmm 代码）vs C（与 QEMU、SPDK 同栈）。建议：`fulmard` 用 Rust，块后端抽象先只实现 `uring`；`spdk` 档通过薄 FFI（bdev 提交 / 完成、CAW、reservation 几个接口）后接；`libfulmar` 提供 C ABI 给 QEMU。
 2. **默认 `cow_chunk`**：NVMe 上 4K 还是 16K 起步（后者 extent 数少 4 倍，代价是最多 3 个 4K 补齐读）。建议 `auto`，初值按介质。
-3. **是否保留 FUSE 可写**：建议仅非活盘、非 pinned 文件可写。
+3. **是否保留 FUSE 可写**：~~建议仅非活盘、非 pinned 文件可写~~ **已定（2026-11-24）**：可写，活盘（有数据会话打开的 Disk / Pinned 文件）写打开返回 EBUSY，见 §13.1。
 4. **集群规模上限**：64 槽（心跳区 256KB）是否够；OCFS2 为 255。
 5. **memtier 直通是否作为 P1 默认**：fd 直通与现有裸分区后端同一条路径、风险低，建议 P1 即默认，环模式作回退。
 6. **SPDK 档是否进入本期范围**：建议只做后端抽象预留与 P2 实测评估，不作为交付承诺。
