@@ -2,6 +2,7 @@
 
 初版：2026-07-18（来源 192.168.60.112:/root/code/xvirt）。  
 全面刷新：2026-11-20。2026-11-22 增补 §16.3 kestrel 接入方案（1.0 定 kestrel 为时序库），并按 kairos/main 核对更新 §16.0 与 §19 的监控、compute 角色、xvirt-client 打包条目。  
+2026-11-24 新增 §8.2 1.0 存储边界（VM 所属存储、目录布局、快照与迁移规则、代码差距）与 §9.1 网络代码核对。  
 2026-11-23 §16.3 补 Petrel 覆盖（`petrel` / `petrelpool` / `petrelosd` 类别、Petrel 盘经 petrel-vhost 计数取 IO、Petrel 数据存储容量映射到池、三条 Petrel 预置规则）与 center 的 kestrel 容量估算。  
 刷新来源换成 ferrostack 工作区（`/root/work/ferrostack`）下各子仓的代码、README/CLAUDE.md/设计文档，以及 `docs/` 下的跨组件设计稿。本次新增资源规划与 VM 放置（§12）、远程桌面 xdesk（§15）、推送式监控框架 **kestrel**（§16.2，拟替代 VictoriaMetrics + exporter）、用户态共享盘文件系统 **fulmar**（§8.1，拟替代 OCFS2）。
 
@@ -208,6 +209,8 @@ xvirt 同时支持传统本地/共享数据存储和自研存储：
   - `petrel-snapdiff` 按 4MiB 对象比较卷快照，输出 `.xvdiff`，与 xvirt-blockdiff 同格式，用于 OCFS2 ↔ petrel 快照链互迁。
 - **fulmar（规划中）**：用户态共享盘文件系统，`fs_type=fulmar`，用来替代 OCFS2，见 §8.1。
 
+**1.0 边界**：VM 存储用 fulmar（本地 + 集群）+ Petrel，NFS 为共享文件存储的另一选项；每台 VM 必须有一个所属存储（fulmar / NFS，xfs 本地暂留），不能只用 Petrel；去掉 lvm；按 VM 对象（参考 VVol）留到后续版本，见 §8.2。
+
 一个重要的历史约束：`data_store.uuid` 和 `/datastore/<segment>` 里的路径段不一定相同。VM 创建时 agent 需要的 `vm_datastore` 是挂载路径的最后一段，不是实体 uuid。ferrovirt 的服务层会做适配。
 
 ### 8.1 fulmar 用户态共享盘文件系统（替代 OCFS2）
@@ -266,6 +269,107 @@ qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写�
 - 分期：P0 本地原型 → P1 memtier + 工具链 + hyper-agent datastore → P2 性能档（vhost-user-blk、SPDK）→ P3 集群 → P4 运维。
 - 待拍板六项（设计稿 §十七）：实现语言（骨架已按 Rust 写）、默认 `cow_chunk`、FUSE 是否可写、集群槽数、memtier 直通是否默认、SPDK 是否进本期。
 
+### 8.2 1.0 存储边界：VM 所属存储与目录布局（2026-11-24 定）
+
+**结论。** 1.0 的 VM 存储组合是 **fulmar（本地模式 + 集群模式）+ 自研分布式存储 Petrel**，NFS 作为共享文件存储的另一选项。每台 VM 必须有一个**所属存储**：一个文件型数据存储，VM 的配置、NVRAM、快照元数据和内存快照以目录形式放在它上面（下称 VM 目录）；磁盘可以放在文件型数据存储（文件盘）或 Petrel（块卷）上。**不能只用 Petrel**：没有所属存储的 VM 在 1.0 里不允许创建。参考 VMware VVol 的"按 VM 对象存储"模式（VM 不再依赖文件型数据存储）放到后续版本（REQ-STO-034）。
+
+#### 8.2.1 所属存储
+
+| 类型 | 1.0 能否作所属存储 | 说明 |
+|---|---|---|
+| `fulmar` 本地模式 | 是，主推 | 单主机；替代 OCFS2 与本地 XFS 目录（REQ-STO-033） |
+| `fulmar` 集群模式 | 是 | 共享 LUN 多主机挂载；**2026-11-24 定提前进 1.0**（REQ-STO-011 / 012） |
+| `nfs` | 是 | 共享，所有主机同路径挂载（`/datastore/<段>`） |
+| `xfs` 本地 | 暂时保留 | 单主机；fulmar 本地模式稳定后再收口 |
+| `lvm` | **去掉** | 1.0 不再提供 lvm 类型数据存储（REQ-STO-003 不进 1.0） |
+| `ocfs2`（单节点 o2cb） | 只保留存量 | 新建所属存储不再选它，存量 VM 迁到 fulmar |
+| `petrel` | 否 | 只提供块卷，没有文件系统 |
+| `zfs` / `iscsi` 裸块 | 否 | zfs 快照模式未实现；iSCSI LUN 只作 fulmar / xfs 的底层盘 |
+
+规则：
+
+1. 所属存储在建 VM 时**必须指定**，并**记数据库**（`vm_config.owner_datastore_id`），详情页展示；之后的编辑、快照、克隆、迁移、删除一律按它定位 VM 目录，不再从磁盘路径反推。
+2. 控制面按上表白名单校验类型；agent 建目录前再校验该数据存储确实已挂载且类型匹配，不满足就失败，不能落到根文件系统上。
+3. 改所属存储只能走迁移（§8.2.4 高级选项），整个 VM 目录搬走，不能通过改盘间接改变。
+
+#### 8.2.2 VM 目录布局
+
+```text
+/datastore/<所属存储段>/<vm-uuid>/
+  config.xml               VM 配置（lictor 启动依据）
+  placement.json           资源规划放置 sidecar
+  petrel-disks.json        Petrel 盘映射（有 Petrel 盘时）
+  memtier.json / memtier-backing.raw   内存分层配置与换出后端（启用时）
+  nvram.fd                 UEFI 变量（OVMF VARS），随 VM 走
+  <disk-uuid>.qcow2|raw    放在所属存储上的文件盘
+  snapshots/<snap>.json    快照元数据（含各盘快照句柄：文件路径或 Petrel 快照名）
+  snapshots/<snap>.memory | .state + .memtier.raw   内存快照
+  logs/                    QEMU / lictor 按 VM 的日志（可选）
+```
+
+- 放在**另一个文件型数据存储**上的文件盘落在 `/datastore/<该段>/<vm-uuid>/<disk-uuid>.<fmt>`，目录里只有盘；配置、NVRAM、快照元数据始终只在所属存储的 VM 目录。
+- Petrel 盘是卷 `<vm>-<disk>`，VM 目录里只有 `petrel-disks.json` 记录映射。
+- CBT 位图、`.aegis-blank` 标记跟着各自的盘走（文件盘同目录；Petrel 盘放 VM 目录 `cbt/`）。
+- 删除 VM 时 VM 目录、其他数据存储上的 `<vm-uuid>/` 目录、Petrel 卷与卷快照一起清理。
+
+#### 8.2.3 快照
+
+- 快照元数据和内存文件**始终**写所属存储 VM 目录的 `snapshots/`，与磁盘在哪无关。
+- 磁盘快照按盘所在存储各走各的原语，同一次快照里允许混合（先 freeze / 暂停，再逐盘打快照，最后统一提交元数据）：
+
+| 盘所在 | 盘快照方式 |
+|---|---|
+| fulmar（本地 / 集群） | 文件 reflink（O(1)，fulmar 设计稿 §7） |
+| xfs 本地 | `cp --reflink`（现有 V2_XFS_REFLINK） |
+| ocfs2（存量） | `cp --reflink`（现有 V2_OCFS2_REFLINK） |
+| Petrel | Petrel 卷快照 / 回滚 / 删除（`petrel/volume.py` 已有原语） |
+| NFS 文件盘 | **不支持** |
+
+- **VM 只要有一块盘在 NFS 上，就不支持快照**（建快照时拒绝并说明原因）。所属存储在 NFS、盘都在 Petrel 的 VM 可以快照，元数据与内存文件写在 NFS 上的 VM 目录。
+- 现有 `plan_snapshot_mode` 按"所有盘同一类型"选模式、混合即退到未实现的 `V1_QCOW2_CHAIN`，要改成**按盘选**快照方式。
+
+#### 8.2.4 迁移
+
+**高级选项。** VM 迁移（在线、离线）增加"高级选项"：
+
+- **按盘选目标存储**：每块盘可以选择目标数据存储或 Petrel 存储池，不选则不动。
+- **选新的所属存储**：可以换一个所属存储，VM 目录（含 `nvram.fd`、`placement.json`、`memtier.json`、`snapshots/`）整体搬过去，成功后清理源目录。
+- 不开高级选项时：所属存储与目的主机共享（NFS、fulmar 集群）就不动；所属存储只在源主机可达（fulmar 本地、xfs 本地）时必须在高级选项里指定目的端的所属存储，否则拒绝。
+
+**校验：**
+
+1. 目的主机必须能访问所选的所属存储和每块盘的目标存储。
+2. **VM 有快照时，不允许把任何盘迁到 NFS**（例如 fulmar → NFS），因为 NFS 盘不支持快照、快照链无法带过去；需先删除快照。所属存储换到 NFS 不受此限（快照元数据可以放在 NFS 上），但盘的约束照上。
+3. 带快照的盘在 fulmar / xfs / ocfs2 / Petrel 之间迁移走跨存储快照链迁移（§11.3，REQ-STO-029）；在线迁移带快照链的限制沿用 §11.3。
+4. 迁移中止只清理目的端**本次新建**的内容；所属存储在共享存储上时不得删除 VM 目录。
+
+**HA 与克隆：**
+
+- 主机故障自动重启（REQ-CLU-005）只对所属存储为共享存储（NFS、fulmar 集群）且盘都在共享存储 / Petrel 上的 VM 生效，开启保护时校验。
+- 克隆：在目标所属存储新建 VM 目录；文件盘复制（同存储用 reflink），Petrel 盘用 Petrel 克隆（需要独立时 flatten）；NVRAM 复制，MAC 重生成。
+
+#### 8.2.5 后续版本：参考 VVol 的按 VM 对象模式
+
+后续版本考虑参考 VMware VVol：VM 的配置、NVRAM、快照元数据与内存快照作为 Petrel 上的 config / swap / data 类卷对象存放，存储侧原生快照和策略（REQ-STO-030）按 VM 粒度管理，VM 不再需要文件型数据存储。1.0 不做；1.0 的目录布局与"快照元数据记盘快照句柄"的做法要为它留路，新代码不要在"VM 一定有 `/datastore/<段>/<uuid>/` 目录"之外再写死别的假设。
+
+#### 8.2.6 已拍板（2026-11-24）
+
+1. 去掉 lvm 类型数据存储；xfs 本地存储暂时保留，可作所属存储；ocfs2 只保留存量。
+2. fulmar 集群模式提前进 1.0（REQ-STO-011 / 012）。
+3. VM 有任一 NFS 盘就不支持快照；有快照的 VM 不能把盘迁到 NFS。
+
+#### 8.2.7 代码现状与差距（2026-11-24 按 kairos/main 核对）
+
+1. 所属存储类型只用黑名单挡了 `petrel`（`ferrovirt/src/service/vm_create.rs:1399`），没有白名单；agent `create_vm`（`hyper-agent/hyper_agent/vm/guest.py:67-82`）不查类型也不查挂载，挂载缺失时会把目录建在根文件系统上。lvm 仍可创建（`storage_net.rs:381-456`）。
+2. 所属存储不记库，至少五处从磁盘路径反推（`write.rs:45-63` 的 SQL 没排除光驱、`vm_update.rs:1027-1032`、`snapshot.rs:106-119`、`vm_create.rs:1178-1207`、`snapshot_migrate.rs:644`）；只有 Petrel 盘的 VM 编辑 / 快照 / 克隆会失败或定位错。
+3. NVRAM 在主机本地 `/var/lib/libvirt/qemu/nvram/<uuid>_VARS.fd`（`vm_create.rs:33,212`），迁移、克隆、HA 后 UEFI 变量被模板重置，删除 VM 时残留。
+4. 全栈没有 `fulmar` 数据存储类型（ferrovirt、hyper-agent 注册表、lictor、xvirt-client 均无）；fulmar 本身集群模式代码未编译未测试。
+5. 快照：只有 xfs / ocfs2 / btrfs 纯 reflink 可用；任何带 Petrel 盘或混合存储的 VM 都落到未实现的 `V1_QCOW2_CHAIN`（`vm_create.rs:964-984`、`snapshot.rs:279-288`），Petrel 卷快照原语 ferrovirt 没调用。自动化用例 `stage60.vm.snapshot` 因此跳过。NFS 盘拒绝快照的提示也要按 §8.2.3 明确。
+6. 在线迁移只接受"盘全在 Petrel"的 VM，没有按盘选存储和选所属存储的选项；目的端 VM 目录取该主机第一个 `xfs/local` 数据存储（`vm_migrate.rs:64-78,99-114`），不支持所属存储在 NFS；只带 `config.xml` 与 `petrel-disks.json`（`lictor/lictor/vm/migration.py:85-124`），丢 NVRAM / placement / memtier / snapshots；源目录不删；所属存储共享时 abort 的 `rmtree` 会删掉共享目录。
+7. 克隆 Petrel 盘会变成 VM 目录里的空 qcow2（`vm_create.rs:1229-1237`），数据丢失。
+8. HA：ferrovirt 不向 concilium 注册 VM 资源；lictor 靠扫 `/datastore/*/<uuid>/config.xml` 找 VM，隐含要求 VM 目录在共享存储上。
+9. 前端所属存储（"位置"）候选是 `{ext4, xfs, btrfs, ocfs2, gfs2, nfs}`（`xvirt-client/src/components/wizards/NewVmWizard.jsx:54-55`），与后端不一致，没有 fulmar；迁移对话框没有高级选项。
+
 ## 9. 网络体系
 
 网络资源模型以 `virtual_switch` 为核心，支持：
@@ -280,6 +384,34 @@ qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写�
 - network 句柄已按"uuid 优先，回退 db id"解析，路由为 `/api/vcenter/network/{network}`。
 - VM 创建时，提交的 network 会被解析为实际 `source_dev`，避免 agent 生成配置时出现空 bridge。
 - SR-IOV VF 目前只做扫描同步和计数，**还没接入 VM 创建**。
+
+### 9.1 代码现状与差距（2026-11-24 按 kairos/main 核对）
+
+交换机 / 端口组的控制面齐了，数据面偏薄。按 1.0 需求逐条：
+
+| 需求 | 状态 | 主要差距 |
+|---|---|---|
+| REQ-NET-001 Linux Bridge | 部分 | VM 网卡在 Linux Bridge 上起不来（见缺陷 1）；只走 nmcli，无 NetworkManager 的主机不建桥；uplink 失败仍报成功；标准交换机 uplink 不落 `virtual_switch_uplink`；删除不还原网卡原连接 |
+| REQ-NET-002 OVS | 基本实现 | MTU 不生效；端口组的安全 / 整形策略只写 `external_ids`，数据面不生效 |
+| REQ-NET-004 端口组 | 部分 | VLAN 不进数据面（缺陷 2）；删除不查在用 VM；不校验端口组在 VM 所在主机；前端不传 `port_group_type` |
+| REQ-NET-006 Bond | 基本缺失 | 没有主机级 bond API；只有 OVS 端口组 teaming 的副作用 bond（active-backup / balance-slb，无 LACP） |
+| REQ-NET-008 流量分离 | 缺失 | vmotion / storage 端口组类型只是标签；在线迁移固定走管理 IP（`vm_migrate.rs:136-149`），Petrel mon/osd 也只用管理 IP |
+| REQ-NET-009 物理网卡信息 | 部分 | agent 采集齐全，入库路径被缺陷 3 打断；无双工 |
+| REQ-VM-030 / 077 网卡增删、热插 | 实现 | 缺陷 1、缺陷 4 |
+| REQ-VM-031 网卡型号 | 实现 | 后端无白名单，任意字符串直传 QEMU；`driver_queues` 不生成多队列 |
+| REQ-VM-033 网卡 VLAN | 缺失 | 缺陷 2 |
+| 分布式交换机 | 部分 | 失败主机不重试 / 不对账；无增删成员主机 API；新主机不自动加入 |
+| SR-IOV | 仅扫描 | 未接入 VM 创建 |
+
+缺陷（高置信）：
+
+1. **Linux Bridge 上的网卡被当成 OVS 端口**：`vm_create.rs:394-396` 对所有 `type=bridge` 网卡默认写 `virtualport_type=openvswitch`，lictor 据此 `ovs-vsctl add-port`（`lictor/lictor/vm/guest.py:2498`）失败，VM 起不来；热插按交换机类型判断是对的，但下次冷启动重新生成又错。
+2. **VLAN 存了不生效**：端口组 VLAN 写入 `vm_network_interface.vlan_id`，lictor 只对 `direct` / `hostdev` 写 VLAN，tap 建好后从不 `ovs-vsctl set port tag=` 或 `bridge vlan add`；trunk 类型直接丢弃（`vm_create.rs:1082`）。
+3. **`hardware_scan` 会清空主机网络记录**：`storage_net.rs:269-273` 把 agent `scan_network` 原样交给 `host_sync::apply_networks`，键名对不上（`interfaces` / `linux_bridges` / `ovs_bridges` vs `network_interfaces` / `virtual_switches`），走到"上报为空"分支，软删该主机全部网卡、交换机、端口组，硬删 uplink 与 VF。
+4. **冷启动与热插的网卡设备 id 不一致**：冷启动按位置编号 `net0..`，热插按 alias 编号；热删 net0、热加 net2、重启后再热删 net2 会 `device_del` 失败。
+5. **`delete_bridge` 永远报成功**（`hyper-agent/hyper_agent/controller/network.py:101-109`），DB 照删。
+6. **MAC 无唯一性校验**：`52:54:00` + 随机 24 位，约 4.8k 网卡时碰撞概率约 50%；用户自填 MAC 不校验格式与重复。
+7. **在线迁移不预检目的端网络**：目的端缺桥 / 端口组时到 `migrate_incoming` 建 tap 才失败（源 VM 不受影响，但报错笼统）。
 
 ## 10. VM 生命周期关键链路
 
@@ -567,7 +699,7 @@ qemu / concilium / cdp（C SDK，调用方定期 kst_poll）  ──────
 
 本节是 kestrel 接入 1.0 的实现设计，读者是直接写代码的工程师或 Agent。目标是让 Cairn 1.0 中被监控口径阻塞的五条需求可交付：REQ-MON-001（主机 CPU / 内存 / 网络 / 磁盘实时与历史曲线）、REQ-MON-002（VM CPU / 内存 / 磁盘 IOPS 与延迟 / 网络）、REQ-MON-006（告警规则：阈值、持续时间、级别、对象作用域）、REQ-MON-007（预置告警：主机断连、存储将满、HA 动作、硬件故障）、REQ-PLT-011（资源概览仪表盘含告警汇总）。另外覆盖 REQ-STO-019（Petrel 集群 / OSD 健康）的监控与告警部分。
 
-**Petrel 覆盖（2026-11-23 补充）**：1.0 部署场景里数据存储和 VM 盘默认放在 Petrel 共享池上（xvirt-autotest `physical-dual` 场景的 `fulmar` 池就是 Petrel 池，与 fulmar 文件系统无关）。原方案的 `ds` 只覆盖挂在 `/datastore/<段>` 的文件系统，`vmdisk` 只取 QMP `query-blockstats`，而 Petrel 数据存储没有文件系统挂载、Petrel 盘经 vhost-user-blk 直挂不过 QEMU 块层，两者都会没有数据；「存储将满」预置规则也就对 Petrel 不生效。本节因此增加 `petrel` / `petrelpool` / `petrelosd` 三个类别、`vmdisk` 的 petrel-vhost 数据源、Petrel 数据存储到池的映射与三条 Petrel 预置规则（§16.3.2–§16.3.6）。
+**Petrel 覆盖（2026-11-23 补充）**：现有测试部署里 VM 盘默认放在 Petrel 共享池上（xvirt-autotest `physical-dual` 场景的 `fulmar` 池就是 Petrel 池，与 fulmar 文件系统无关）；按 §8.2 的 1.0 边界，VM 目录另在所属存储（fulmar / NFS）上，Petrel 只放盘。原方案的 `ds` 只覆盖挂在 `/datastore/<段>` 的文件系统，`vmdisk` 只取 QMP `query-blockstats`，而 Petrel 数据存储没有文件系统挂载、Petrel 盘经 vhost-user-blk 直挂不过 QEMU 块层，两者都会没有数据；「存储将满」预置规则也就对 Petrel 不生效。本节因此增加 `petrel` / `petrelpool` / `petrelosd` 三个类别、`vmdisk` 的 petrel-vhost 数据源、Petrel 数据存储到池的映射与三条 Petrel 预置规则（§16.3.2–§16.3.6）。
 
 已定的决定（2026-11-22）：
 
@@ -939,6 +1071,8 @@ fulmard 不占 TCP 端口：控制 API 走本机 unix socket，数据走共享�
 - **concilium 迁移路径不通**：RA → `lictor migrate` → `migrate_vm` 未实现；conciliumd unit 没有 `After=xvirt-lictor`，只靠 `xvirtctl` 的启动顺序。
 - **`xvirtctl` 不管 `xvirt-resource-plan`**。
 - **SR-IOV VF 分配未接入 VM 创建**。
+- **VM 存储与 1.0 边界不符**（§8.2.7）：所属存储不记库、NVRAM 在主机本地、无 fulmar 数据存储类型、带 Petrel 盘的 VM 不能快照、克隆 Petrel 盘丢数据、迁移丢 NVRAM 等文件。
+- **网络数据面缺陷**（§9.1）：Linux Bridge 上 VM 起不来、VLAN 不生效、`hardware_scan` 会清空主机网络记录、无主机 bond 与流量分离。
 - **前端 i18n 未完成**：表单和向导正文仍有大量硬编码中文。
 - **大量能力处于"已实现未验证"**：资源规划与放置、内存分层快照、CDP 改名、`memtier-shared-backing` 跨主机迁移都缺真机端到端验证。
 - **兼容矩阵缺失**：memtier、petrel、热插拔、在线迁移、资源规划（cgroup v2 cpuset 分区、RDT、hugetlb）都依赖 QEMU / 内核 / 硬件条件，没有统一的兼容矩阵文档。
