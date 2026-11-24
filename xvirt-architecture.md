@@ -558,7 +558,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 054 Guest 信息 | 已实现未验证（2026-11-24） | `/guest/info` 默认读 `vm_guest_state` 缓存（摘要页频繁调不阻塞），运行中且 tools 在线、磁盘用量缓存超 60 s 时后台刷新，`?live=1` 同步实时取；返回 OS（发行版 / 版本 / 内核 / 架构）、主机名、IP 列表、各文件系统用量（新列 `fs_json`）、上次 CPU / 内存；关机后仍可看上次信息。`/guest/metrics`、`GET /guest/network` 实时取。客户机页加“文件系统用量”卡片，摘要页显示主机名 |
 | 055 优雅关机重启 | 部分 | 详情页“关闭 / 重启客户机”已走 xvirt-tools（关机不可用时退 ACPI）；通用“关机”（stop）仍是 ACPI + 60 s 强杀，未先走 tools |
 | 056 文件系统冻结 | 已实现未验证（2026-11-24） | xvirt-tools `fs.freeze` / `fs.thaw` / `fs.status`（Linux FIFREEZE / FITHAW，逐个可写文件系统、逆挂载顺序冻结，自带超时自动解冻，默认 60 s 最长 600 s）；Windows（VSS）未做 |
-| 059 Tools 安装升级 | 缺失 | 无安装 ISO / 包、无升级提示 |
+| 059 Tools 安装升级 | 已实现未验证（2026-11-24） | 安装盘：xvirt-tools `make iso` 出卷标 XVIRT-TOOLS 的 ISO（Linux amd64/arm64 + `linux/install.sh` systemd 服务；Windows amd64 + `windows/install.ps1`/`install.cmd`，以 SYSTEM 开机计划任务托管、异常 1 分钟后重启；需 virtio-serial 驱动）；主机 deb `xvirt-guest-tools` 装 `/usr/share/xvirt/guest-tools/{xvirt-tools.iso,VERSION}`（进 xvirt-meta 依赖），工具版本 = BASE_VER+git<xvirt-tools sha>。hyper-agent 上报 `guest_tools_version` → `host.guest_tools_version`；`/guest/info` 返回 `tools_upgrade{host_version,upgrade_available}`（版本不同且主机不旧）；`POST /vm/{vm}/guest/tools?action=mount` 把安装盘放进光驱（关机无光驱自动加 SATA 光驱），`action=upgrade` 挂盘后调客户机新 RPC `tools.upgrade`（脱离自身后台跑安装脚本：Linux systemd-run、Windows WMI Win32_Process.Create）并等新版本重连。摘要页显示“可升级到 x”+“升级 / 挂载安装光盘”。已装的旧版 xvirt-tools 没有 `tools.upgrade`，首次需手动运行光盘安装脚本 |
 | 060 转换为模板 | 已实现未验证（2026-11-24） | 见 docs/vm-template-design.md §10：模板 = VM 加标记，不能开机可编辑 |
 | 061 从模板部署 | 已实现未验证（2026-11-24） | 单台 / 批量部署，快速部署按盘 reflink，xvirt-tools 客户机定制 |
 | 062 完整克隆 | 部分 | 单机界面（列表右键、详情页工具栏）与管理中心都有入口（2026-11-24，待验证）；运行中克隆一致性与 Petrel 盘克隆已修（缺陷 17、3，待验证）；NFS 上的运行中克隆不支持 |
