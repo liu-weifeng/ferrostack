@@ -559,9 +559,9 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 055 优雅关机重启 | 部分 | 详情页“关闭 / 重启客户机”已走 xvirt-tools（关机不可用时退 ACPI）；通用“关机”（stop）仍是 ACPI + 60 s 强杀，未先走 tools |
 | 056 文件系统冻结 | 缺失 | xvirt-tools 无 freeze RPC |
 | 059 Tools 安装升级 | 缺失 | 无安装 ISO / 包、无升级提示 |
-| 060 转换为模板 | 缺失 | 无模板概念；管理中心“克隆为模板”是假任务 |
+| 060 转换为模板 | 缺失 | 无模板概念；管理中心“克隆为模板”现如实报未实现 |
 | 061 从模板部署 | 缺失 | 同上 |
-| 062 完整克隆 | 部分 | 后端有接口，前端无入口；文件盘运行中克隆不一致（缺陷 17）；Petrel 盘克隆已修（缺陷 3） |
+| 062 完整克隆 | 部分 | 管理中心右键“克隆”已接接口，单机界面仍无入口；文件盘运行中克隆不一致（缺陷 17）；Petrel 盘克隆已修（缺陷 3） |
 | 063 链接克隆 | 缺失 | — |
 | 065 Linux 定制 | 缺失 | 无 cloud-init 数据源 |
 | 067 创建快照 | 部分 | Petrel / fulmar / 混合存储写库失败（缺陷 1） |
@@ -589,7 +589,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 8. VNC 默认监听 `0.0.0.0`、无密码，websockify 不校验 ticket，控制台无鉴权。（2026-11-24 已修：QEMU VNC 只监听本机且一律 `password=on`（未设密码时拒绝所有连接，老配置里的 0.0.0.0 也收回），websockify 只监听本机；每次申请控制台 ticket，lictor 经 QMP `set_password` 现设 8 位随机密码并 60 s 后过期，ticket 带给前端交 noVNC。旧版本启动的 VM 未开密码认证时 ticket 带 `auth_warning`，重启后生效；未验证。遗留：VNC 认证是 DES 质询、口令最长 8 位，靠一次性 + 短时效弥补；主机 nginx `/vnc/<port>/` 本身不校验用户会话）
 9. 缓存模式不进 `-blockdev`；discard 只设在 file 节点，TRIM 实际无效。（2026-11-24 已修：lictor `block_cache_opts` 按 libvirt 语义把 cache / io / discard 映射到协议节点与格式节点的 `cache.direct` / `no-flush` / `aio` / `discard` 和设备 `write-cache`，冷启动与热插同一套；`aio=native` 在非 direct 时退成 threads；fulmar 协议节点的缓存不动、只跟 discard。注意默认 `cache=none` 现在真的生效（O_DIRECT），以前实际是 writeback；未验证）
 10. 详情页“关闭 / 重启客户机”发 `guest_shutdown` / `guest_reboot`，后端不认，且前端不报错。（2026-11-24 已修：后端新增这两个动作，经 xvirt-tools `os.shutdown` / `os.reboot`；关闭客户机在 tools 不可用时退回 ACPI 关机，重启客户机在 tools 不可用时报错、不悄悄换成硬重置；前端补上失败提示；未验证）
-11. 管理中心新建 VM、编辑 VM、重命名、编辑备注、克隆为模板只显示假任务，不调接口。
+11. 管理中心新建 VM、编辑 VM、重命名、编辑备注、克隆为模板只显示假任务，不调接口。（2026-11-24 已修：新建 VM（仅“新建”类型）、编辑设置（名称 / vCPU / 内存）、重命名、编辑备注、克隆虚拟机接到真实接口；克隆为模板及其余没接后端的入口（主机维护模式 / 电源、导出日志、新建数据存储、点亮定位灯、池编辑等）不再本地模拟进度报成功，一律记为失败任务“暂未实现”；任务跟踪 60 s 超时不再兜底标“完成”；未验证）
 12. 自动应答装机三个接口不通（iso-probe、installation-iso 为 501，answer-iso 参数形状不对），留下半成品 VM。（2026-11-24 已修：ferrovirt 实现 `iso-probe`（转 agent `probe_iso`）、`answer-preview`（`build_answer_file` 并解码内容）、`installation-iso`（写 `vm.installation_iso_path`，要求关机、路径须在 `/datastore/` 下，开机时既有的 `extra_cdrom_path` 链路挂上）；`answer-iso` 认 `vm_uuid` / `vm` 字符串 / `vm.uuid`，应答格式不再一律 kickstart 而按探测结果选，输出目录用所属存储；未验证）
 13. 非 virtio 网卡设 MTU 时下发 `host_mtu`，VM 起不来 / 热插失败。
 14. 网卡 `link_state=down` 冷启动与热插不生效。
