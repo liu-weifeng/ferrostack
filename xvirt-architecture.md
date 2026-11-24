@@ -518,7 +518,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 
 | 需求 | 状态 | 主要差距 |
 |---|---|---|
-| 001 创建向导 | 部分 | 自动应答部署三个接口全不通（缺陷 12）；“从模板 / 注册 / OVF”无流程；无重名校验；管理中心新建向导是假任务（缺陷 11） |
+| 001 创建向导 | 部分 | 自动应答接口已接通（缺陷 12，待验证）；“从模板 / 注册 / OVF”无流程；无重名校验；管理中心新建向导是假任务（缺陷 11） |
 | 002 电源操作 | 部分 | 无经 guest 的软重启；“关闭 / 重启客户机”动作名后端不认（缺陷 10）；纳管 VM 强制断电丢 force |
 | 003 挂起恢复 | 部分 | 挂起只是 QMP `stop`，无挂起到磁盘；guest 自己 S3 后用 `cont` 能否唤醒待确认 |
 | 004 删除 | 部分 | 删除前不查快照与依赖；管理中心默认 force，运行中 VM 被直接强杀 |
@@ -590,7 +590,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 9. 缓存模式不进 `-blockdev`；discard 只设在 file 节点，TRIM 实际无效。（2026-11-24 已修：lictor `block_cache_opts` 按 libvirt 语义把 cache / io / discard 映射到协议节点与格式节点的 `cache.direct` / `no-flush` / `aio` / `discard` 和设备 `write-cache`，冷启动与热插同一套；`aio=native` 在非 direct 时退成 threads；fulmar 协议节点的缓存不动、只跟 discard。注意默认 `cache=none` 现在真的生效（O_DIRECT），以前实际是 writeback；未验证）
 10. 详情页“关闭 / 重启客户机”发 `guest_shutdown` / `guest_reboot`，后端不认，且前端不报错。（2026-11-24 已修：后端新增这两个动作，经 xvirt-tools `os.shutdown` / `os.reboot`；关闭客户机在 tools 不可用时退回 ACPI 关机，重启客户机在 tools 不可用时报错、不悄悄换成硬重置；前端补上失败提示；未验证）
 11. 管理中心新建 VM、编辑 VM、重命名、编辑备注、克隆为模板只显示假任务，不调接口。
-12. 自动应答装机三个接口不通（iso-probe、installation-iso 为 501，answer-iso 参数形状不对），留下半成品 VM。
+12. 自动应答装机三个接口不通（iso-probe、installation-iso 为 501，answer-iso 参数形状不对），留下半成品 VM。（2026-11-24 已修：ferrovirt 实现 `iso-probe`（转 agent `probe_iso`）、`answer-preview`（`build_answer_file` 并解码内容）、`installation-iso`（写 `vm.installation_iso_path`，要求关机、路径须在 `/datastore/` 下，开机时既有的 `extra_cdrom_path` 链路挂上）；`answer-iso` 认 `vm_uuid` / `vm` 字符串 / `vm.uuid`，应答格式不再一律 kickstart 而按探测结果选，输出目录用所属存储；未验证）
 13. 非 virtio 网卡设 MTU 时下发 `host_mtu`，VM 起不来 / 热插失败。
 14. 网卡 `link_state=down` 冷启动与热插不生效。
 15. 静默快照不冻结文件系统，库里却记 `quiesced=1`、界面标“应用一致”。（2026-11-24 已修误标：冻结实现前快照一律记崩溃一致，请求了静默的在任务消息里说明；已有记录的 `quiesced=1` 启动时一次性清掉（`ferrovirt_fixup` 记号，不重复执行）；两个创建快照对话框的静默选项置灰并注明暂不支持。真正的静默快照（REQ-VM-071 / 056）仍待 xvirt-tools 加冻结；未验证）
