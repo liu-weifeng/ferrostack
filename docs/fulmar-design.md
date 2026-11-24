@@ -389,6 +389,7 @@ QEMU memtier/backing-fulmar.c:
 - 实现：SCSI `COMPARE AND WRITE`(0x89) / NVMe fused `Compare + Write`。`uring` 后端：NVMe 经 `/dev/ngXnY` 的 io_uring passthrough（或 `NVME_IOCTL_IO_CMD`）发 fused 命令，SCSI 经 `SG_IO`；`spdk` 后端：`spdk_bdev_comparev_and_writev_blocks`。记录一个原子写单元（512B 或 4K，按设备）。
 - 锁记录：`{magic, lock_id, owner_node, owner_epoch, lease_seq, type, payload_crc}`。
 - 获取：读 → 若空闲或 owner 已被判死且其 epoch 已被回收 → CAW(期望旧值, 新值=我)。失败重读重试（有界退避）。
+- **判死 ≠ 锁可接管**（2026-11-23）：心跳判死时死节点可能尚未被 PR 抢占隔离、journal 尚未重放，此时别人拿走它的 InodeOwner / AG 租约锁，会在旧映射上写，重放再把映射改回去。所以 (节点, epoch) 只有在**恢复完成**——`PREEMPT` → 重放其 journal → 清掉它在盘上的全部锁记录——之后，才在本节点被视为已死、锁可接管；恢复进行中只有执行恢复的那个线程（要拿它持有的 Namespace / AG 锁）可以接管。判死只把它排进待恢复，心跳线程每个周期重试（恢复锁被别人持有、执行恢复的节点自己中途死掉等）；恢复锁只试一次不等待，免得心跳线程阻塞超过判死时长。网络 DLM 的排队可在判死时先清，盘上 ATS 锁仍挡着。
 - 续约：**不逐锁续约**，锁的有效性绑定 owner 的磁盘心跳；owner 心跳活着则它的所有 ATS 锁有效。
 - 释放：CAW 写回空闲。
 - 用途（慢变化、必须跨网络分区可见的所有权）：集群配置锁、节点槽锁、**AG 租约**、**inode 所有权**（活盘归属）、journal 恢复锁。
