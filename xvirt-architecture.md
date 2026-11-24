@@ -580,7 +580,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 高置信缺陷（已提 Cairn bug，编号对应下面的列表）：
 
 1. 快照模式 `V2_PER_DISK` / `V2_FULMAR_REFLINK` 不在建表枚举里（`vm_snapshot.snapshot_mode`、`vm_snapshot_disk.storage_backend`、`vm_config.snapshot_mode`），带 Petrel / fulmar / 混合存储的 VM 快照写库失败；建 fulmar 上的 VM 写 `vm_config.snapshot_mode` 同样失败。同类问题：`datastore.type` 枚举没有 `fulmar`，fulmar 数据存储建不进库。（2026-11-24 已修：ferrovirt `service/schema_fix.rs` 启动时把四列放开为 VARCHAR 并修复被截成空串的旧值，打包建表脚本同步改为 varchar；未验证）
-2. 删快照子树时当前快照指针停在已删记录上，之后新快照 parent 外键失败，VM 再也拍不了快照（`snapshot.rs` 只在开头读一次 vm）。
+2. 删快照子树时当前快照指针停在已删记录上，之后新快照 parent 外键失败，VM 再也拍不了快照（`snapshot.rs` 只在开头读一次 vm）。（2026-11-24 已修：删除前一次算好新指针——当前在子树里则落到子树根的父节点；建快照时指针悬空按无父处理；启动时清掉已悬空的指针；未验证）
 3. 克隆 Petrel 盘变成空 qcow2，数据丢失（克隆请求不带卷名与存储，`vm_create.rs` 克隆段）。
 4. 运行中删 SATA 盘：agent `update_vm` 先删盘文件，再 `device_del`（SATA 不支持热拔）失败，任务仍成功，关机后数据丢失。
 5. 关机时移除的 Petrel 盘，因 `petrel-disks.json` 合并保留旧卷，下次开机又挂回来。
