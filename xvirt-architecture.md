@@ -555,7 +555,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 049 机器类型 | 部分 | 只有不带版本号的 `q35`；无 i440fx |
 | 050 Web VNC | 部分 | 无浏览器全屏、不能切 1:1；无鉴权（缺陷 8） |
 | 052 控制台快捷操作 | 部分 | 有 Ctrl+Alt+Del，无粘贴文本 |
-| 054 Guest 信息 | 部分 | OS / IP / tools 版本通；`/guest/info`、`/guest/metrics` 501，主机名、磁盘用量拿不到 |
+| 054 Guest 信息 | 已实现未验证（2026-11-24） | `/guest/info` 默认读 `vm_guest_state` 缓存（摘要页频繁调不阻塞），运行中且 tools 在线、磁盘用量缓存超 60 s 时后台刷新，`?live=1` 同步实时取；返回 OS（发行版 / 版本 / 内核 / 架构）、主机名、IP 列表、各文件系统用量（新列 `fs_json`）、上次 CPU / 内存；关机后仍可看上次信息。`/guest/metrics`、`GET /guest/network` 实时取。客户机页加“文件系统用量”卡片，摘要页显示主机名 |
 | 055 优雅关机重启 | 部分 | 详情页“关闭 / 重启客户机”已走 xvirt-tools（关机不可用时退 ACPI）；通用“关机”（stop）仍是 ACPI + 60 s 强杀，未先走 tools |
 | 056 文件系统冻结 | 已实现未验证（2026-11-24） | xvirt-tools `fs.freeze` / `fs.thaw` / `fs.status`（Linux FIFREEZE / FITHAW，逐个可写文件系统、逆挂载顺序冻结，自带超时自动解冻，默认 60 s 最长 600 s）；Windows（VSS）未做 |
 | 059 Tools 安装升级 | 缺失 | 无安装 ISO / 包、无升级提示 |
