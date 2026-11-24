@@ -556,7 +556,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 050 Web VNC | 部分 | 无浏览器全屏、不能切 1:1；无鉴权（缺陷 8） |
 | 052 控制台快捷操作 | 部分 | 有 Ctrl+Alt+Del，无粘贴文本 |
 | 054 Guest 信息 | 部分 | OS / IP / tools 版本通；`/guest/info`、`/guest/metrics` 501，主机名、磁盘用量拿不到 |
-| 055 优雅关机重启 | 部分 | 未先走 Guest Agent（xvirt-tools 已有 os.shutdown / os.reboot） |
+| 055 优雅关机重启 | 部分 | 详情页“关闭 / 重启客户机”已走 xvirt-tools（关机不可用时退 ACPI）；通用“关机”（stop）仍是 ACPI + 60 s 强杀，未先走 tools |
 | 056 文件系统冻结 | 缺失 | xvirt-tools 无 freeze RPC |
 | 059 Tools 安装升级 | 缺失 | 无安装 ISO / 包、无升级提示 |
 | 060 转换为模板 | 缺失 | 无模板概念；管理中心“克隆为模板”是假任务 |
@@ -588,7 +588,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 7. 单盘 `boot_order` 与全局启动顺序分到同一 bootindex；编辑新增的 SATA 盘与已有 SATA 盘抢同一端口——两种情况 VM 都起不来。（2026-11-24 已修：lictor 启动顺序改在 build 时分配，跳过盘上显式设的和 Petrel 盘已有的 bootindex，`hd` 在 XML 里找不到普通盘时落到 Petrel 系统盘；ferrovirt `assign_pci` 的 SATA 端口先收集已占用的再分空闲的；未验证）
 8. VNC 默认监听 `0.0.0.0`、无密码，websockify 不校验 ticket，控制台无鉴权。（2026-11-24 已修：QEMU VNC 只监听本机且一律 `password=on`（未设密码时拒绝所有连接，老配置里的 0.0.0.0 也收回），websockify 只监听本机；每次申请控制台 ticket，lictor 经 QMP `set_password` 现设 8 位随机密码并 60 s 后过期，ticket 带给前端交 noVNC。旧版本启动的 VM 未开密码认证时 ticket 带 `auth_warning`，重启后生效；未验证。遗留：VNC 认证是 DES 质询、口令最长 8 位，靠一次性 + 短时效弥补；主机 nginx `/vnc/<port>/` 本身不校验用户会话）
 9. 缓存模式不进 `-blockdev`；discard 只设在 file 节点，TRIM 实际无效。（2026-11-24 已修：lictor `block_cache_opts` 按 libvirt 语义把 cache / io / discard 映射到协议节点与格式节点的 `cache.direct` / `no-flush` / `aio` / `discard` 和设备 `write-cache`，冷启动与热插同一套；`aio=native` 在非 direct 时退成 threads；fulmar 协议节点的缓存不动、只跟 discard。注意默认 `cache=none` 现在真的生效（O_DIRECT），以前实际是 writeback；未验证）
-10. 详情页“关闭 / 重启客户机”发 `guest_shutdown` / `guest_reboot`，后端不认，且前端不报错。
+10. 详情页“关闭 / 重启客户机”发 `guest_shutdown` / `guest_reboot`，后端不认，且前端不报错。（2026-11-24 已修：后端新增这两个动作，经 xvirt-tools `os.shutdown` / `os.reboot`；关闭客户机在 tools 不可用时退回 ACPI 关机，重启客户机在 tools 不可用时报错、不悄悄换成硬重置；前端补上失败提示；未验证）
 11. 管理中心新建 VM、编辑 VM、重命名、编辑备注、克隆为模板只显示假任务，不调接口。
 12. 自动应答装机三个接口不通（iso-probe、installation-iso 为 501，answer-iso 参数形状不对），留下半成品 VM。
 13. 非 virtio 网卡设 MTU 时下发 `host_mtu`，VM 起不来 / 热插失败。
