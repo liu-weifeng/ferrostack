@@ -585,7 +585,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 4. 运行中删 SATA 盘：agent `update_vm` 先删盘文件，再 `device_del`（SATA 不支持热拔）失败，任务仍成功，关机后数据丢失。（2026-11-24 已修：运行中移除 SATA / IDE 盘或光驱设备直接拒绝；运行中 `update_vm` 不删盘文件，热拔确认完成（lictor 超时后查 `qom-list` 设备仍在则报失败）后再回收，未确认的留到关机后下一次编辑清理；未验证。遗留：冷启动挂的文件盘节点名是 `libvirt-N-*`，热拔时 `blockdev-del hp-*` 删不到，节点会残留到 VM 关机）
 5. 关机时移除的 Petrel 盘，因 `petrel-disks.json` 合并保留旧卷，下次开机又挂回来。（2026-11-24 已修：ferrovirt 把本次移除的 Petrel 卷经 `_petrel_removed` 告知 agent，agent 从 sidecar 摘掉；VM 关机或运行中热拔已确认时回收卷，卷被 VM 快照引用时保留。顺带修了编辑重写 sidecar 丢 `pool` 字段、分层盘编辑后被按默认池服务的问题；未验证）
 6. 编辑后重建配置只传 `vcpu`（库里是最大值），丢 `current_vcpu`，按最大 vCPU 开机、CPU 热添加余量清零；克隆同样。（2026-11-24 已修：`vm_create::vcpu_from_db` 把库里的（最大值, 启动数）还原成请求的（vcpu=启动数, max_vcpu），编辑重建与克隆都走它；未验证）
-7. 单盘 `boot_order` 与全局启动顺序分到同一 bootindex；编辑新增的 SATA 盘与已有 SATA 盘抢同一端口——两种情况 VM 都起不来。
+7. 单盘 `boot_order` 与全局启动顺序分到同一 bootindex；编辑新增的 SATA 盘与已有 SATA 盘抢同一端口——两种情况 VM 都起不来。（2026-11-24 已修：lictor 启动顺序改在 build 时分配，跳过盘上显式设的和 Petrel 盘已有的 bootindex，`hd` 在 XML 里找不到普通盘时落到 Petrel 系统盘；ferrovirt `assign_pci` 的 SATA 端口先收集已占用的再分空闲的；未验证）
 8. VNC 默认监听 `0.0.0.0`、无密码，websockify 不校验 ticket，控制台无鉴权。
 9. 缓存模式不进 `-blockdev`；discard 只设在 file 节点，TRIM 实际无效。
 10. 详情页“关闭 / 重启客户机”发 `guest_shutdown` / `guest_reboot`，后端不认，且前端不报错。
