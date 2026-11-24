@@ -512,6 +512,95 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 
 迁移网络（REQ-CLU-016，2026-11-24）：迁移请求可带 `migration_network`（CIDR 或 `management`），不带时用集群默认网段（`cluster.migration_network`，`PUT /api/vcenter/cluster/{id}/migration-network`），都没有走目的主机管理 IP。选定网段后 ferrovirt 实时调目的主机 agent `scan_network`，取它在该网段的地址作为 `-incoming` 监听地址和源端连接地址；目的主机在该网段无地址则迁移前报错。代码 `service/migrate_net.rs`。QEMU 11.1 fork 带按热度的迭代 pre-copy。memtier VM 可以用 `memtier-shared-backing` 迁移能力：后端共享，不搬冷页（QEMU 侧自标 WIP，跨主机实测未确认）。
 
+### 10.5 虚拟机特性现状与差距（2026-11-24 按 1.0 已承诺需求审查）
+
+按 1.0 已承诺的 59 条虚拟机需求逐条从前端追到 QEMU 命令行（只读代码，未编译、未实测；审查时各子仓版本 ferrovirt `d00d396`、lictor `afd077a`、hyper-agent `645a383`、xvirt-client `bb9fadd`）。REQ-VM-033 网卡 VLAN 此前已修，未复审。其余 58 条：实现 / 基本实现 10 条，部分 32 条，缺失 16 条。
+
+| 需求 | 状态 | 主要差距 |
+|---|---|---|
+| 001 创建向导 | 部分 | 自动应答部署三个接口全不通（缺陷 12）；“从模板 / 注册 / OVF”无流程；无重名校验；管理中心新建向导是假任务（缺陷 11） |
+| 002 电源操作 | 部分 | 无经 guest 的软重启；“关闭 / 重启客户机”动作名后端不认（缺陷 10）；纳管 VM 强制断电丢 force |
+| 003 挂起恢复 | 部分 | 挂起只是 QMP `stop`，无挂起到磁盘；guest 自己 S3 后用 `cont` 能否唤醒待确认 |
+| 004 删除 | 部分 | 删除前不查快照与依赖；管理中心默认 force，运行中 VM 被直接强杀 |
+| 005 状态同步 | 部分 | 关机 / QEMU 退出约 1.5 s 反映；无 pvpanic，崩溃检测不到 |
+| 006 开机自启与顺序 | 缺失 | 无 autostart / 启动顺序 / 延迟 |
+| 008 重命名与备注 | 部分 | 描述清不空；摘要页“编辑备注”按钮未绑定；管理中心为假任务 |
+| 009 批量操作 | 部分 | 批量重启只对第一台生效；无批量迁移；管理中心不能多选 |
+| 011 vCPU 与拓扑 | 部分 | 拓扑乘积不等时静默压平；编辑后重建丢启动 vCPU（缺陷 6） |
+| 012 CPU 型号 | 部分 | host-model 实为 `-cpu host`，迁移预检却当作可跨异构主机；无 x86-64-v2/v3 基线 |
+| 014 vCPU 绑核 | 实现 | 仅资源规划页可配 |
+| 016 内存大小 | 部分 | 建 VM 不做主机空闲内存准入 |
+| 017 内存气球 | 部分 | 只挂设备，无动态回收、无最小内存 |
+| 018 memtier | 部分 | 建后不能改；tunables 在重建配置时丢 |
+| 019 大页 | 部分 | 只能在资源规划页设；热加内存不是大页 |
+| 020 添加 / 移除磁盘 | 部分 | 不能挂已有磁盘；移除不清 Petrel 卷和非所属存储上的盘文件 |
+| 021 总线类型 | 部分 | 无 NVMe（静默变 virtio-blk）；Petrel 盘总线固定 vhost-user-blk |
+| 022 置备方式 | 缺失 | 向导有下拉但不下发；lazy / eager 不分 |
+| 023 在线扩容 | 缺失 | 无接口、无 `block_resize` |
+| 024 缓存模式 | 部分 | 落库但 `-blockdev` 不读（缺陷 9） |
+| 025 磁盘 I/O 限速 | 缺失 | — |
+| 026 Discard / TRIM | 部分 | format 节点未开 discard，实际无效（缺陷 9） |
+| 030 添加 / 移除网卡 | 实现 | 运行中改端口组 / VLAN / MTU 不热生效 |
+| 031 网卡型号 | 部分 | 向导缺 e1000e；无白名单；非 virtio 设 MTU 起不来 |
+| 032 MAC 地址 | 部分 | 无 MAC 池；已有网卡 MAC 不能改 |
+| 034 网卡限速 | 缺失 | 端口组 shaping 只写 OVS external_ids |
+| 035 链路断开 / 连接 | 部分 | 运行中 `set_link` 生效；冷启动 / 热插不生效 |
+| 037 光驱与 ISO | 基本实现 | 运行中重新勾选“已连接”不生效；不能热加光驱 |
+| 038 USB 直通 | 缺失 | config_builder TODO，不生成 usb-host |
+| 039 PCI 直通 | 缺失 | 同上；vfio-pci 只用在 SR-IOV 网卡 |
+| 041 vTPM 2.0 | 实现 | 状态在主机本地，HA / 冷迁移后丢（待确认是否在验收范围） |
+| 046 BIOS / UEFI | 实现 | — |
+| 047 安全启动 | 实现 | — |
+| 048 启动顺序 | 部分 | 网卡启动被忽略；启动菜单开关不生效；bootindex 撞号（缺陷 7） |
+| 049 机器类型 | 部分 | 只有不带版本号的 `q35`；无 i440fx |
+| 050 Web VNC | 部分 | 无浏览器全屏、不能切 1:1；无鉴权（缺陷 8） |
+| 052 控制台快捷操作 | 部分 | 有 Ctrl+Alt+Del，无粘贴文本 |
+| 054 Guest 信息 | 部分 | OS / IP / tools 版本通；`/guest/info`、`/guest/metrics` 501，主机名、磁盘用量拿不到 |
+| 055 优雅关机重启 | 部分 | 未先走 Guest Agent（xvirt-tools 已有 os.shutdown / os.reboot） |
+| 056 文件系统冻结 | 缺失 | xvirt-tools 无 freeze RPC |
+| 059 Tools 安装升级 | 缺失 | 无安装 ISO / 包、无升级提示 |
+| 060 转换为模板 | 缺失 | 无模板概念；管理中心“克隆为模板”是假任务 |
+| 061 从模板部署 | 缺失 | 同上 |
+| 062 完整克隆 | 部分 | 后端有接口，前端无入口；Petrel 盘克隆丢数据（缺陷 3）；运行中克隆不一致 |
+| 063 链接克隆 | 缺失 | — |
+| 065 Linux 定制 | 缺失 | 无 cloud-init 数据源 |
+| 067 创建快照 | 部分 | Petrel / fulmar / 混合存储写库失败（缺陷 1） |
+| 068 恢复快照 | 部分 | 无“恢复后开机”；NVRAM 与 VM 配置不进快照；多盘回滚中途失败不撤回 |
+| 069 删除快照 | 部分 | 删中间节点须连子树；无“删除全部”；子树删除有缺陷 2 |
+| 070 快照树 | 实现 | 受缺陷 2 影响 |
+| 071 静默快照 | 缺失 | lictor 忽略 quiesce，界面却标“应用一致” |
+| 072 内存分层快照 | 基本实现 | 默认 auto 而非 keep；恢复时不能选 keep / merge |
+| 074 CPU 热添加 | 部分 | 向导勾选不下发；编辑后余量被清（缺陷 6） |
+| 075 内存热添加 | 部分 | 向导勾选不下发；无 virtio-mem |
+| 076 磁盘热插拔 | 部分 | SATA / IDE 不拦（缺陷 4）；热插盘不带 cache / discard |
+| 077 网卡热插拔 | 实现 | 热插忽略 link_state |
+| 080 镜像导入 | 缺失 | — |
+| 085 Guest OS 清单 | 缺失 | 无清单、无 virtio-win、tools 无安装包 |
+
+高置信缺陷（已提 Cairn bug，编号对应下面的列表）：
+
+1. 快照模式 `V2_PER_DISK` / `V2_FULMAR_REFLINK` 不在建表枚举里（`vm_snapshot.snapshot_mode`、`vm_snapshot_disk.storage_backend`、`vm_config.snapshot_mode`），带 Petrel / fulmar / 混合存储的 VM 快照写库失败；建 fulmar 上的 VM 写 `vm_config.snapshot_mode` 同样失败。同类问题：`datastore.type` 枚举没有 `fulmar`，fulmar 数据存储建不进库。（2026-11-24 已修：ferrovirt `service/schema_fix.rs` 启动时把四列放开为 VARCHAR 并修复被截成空串的旧值，打包建表脚本同步改为 varchar；未验证）
+2. 删快照子树时当前快照指针停在已删记录上，之后新快照 parent 外键失败，VM 再也拍不了快照（`snapshot.rs` 只在开头读一次 vm）。
+3. 克隆 Petrel 盘变成空 qcow2，数据丢失（克隆请求不带卷名与存储，`vm_create.rs` 克隆段）。
+4. 运行中删 SATA 盘：agent `update_vm` 先删盘文件，再 `device_del`（SATA 不支持热拔）失败，任务仍成功，关机后数据丢失。
+5. 关机时移除的 Petrel 盘，因 `petrel-disks.json` 合并保留旧卷，下次开机又挂回来。
+6. 编辑后重建配置只传 `vcpu`（库里是最大值），丢 `current_vcpu`，按最大 vCPU 开机、CPU 热添加余量清零；克隆同样。
+7. 单盘 `boot_order` 与全局启动顺序分到同一 bootindex；编辑新增的 SATA 盘与已有 SATA 盘抢同一端口——两种情况 VM 都起不来。
+8. VNC 默认监听 `0.0.0.0`、无密码，websockify 不校验 ticket，控制台无鉴权。
+9. 缓存模式不进 `-blockdev`；discard 只设在 file 节点，TRIM 实际无效。
+10. 详情页“关闭 / 重启客户机”发 `guest_shutdown` / `guest_reboot`，后端不认，且前端不报错。
+11. 管理中心新建 VM、编辑 VM、重命名、编辑备注、克隆为模板只显示假任务，不调接口。
+12. 自动应答装机三个接口不通（iso-probe、installation-iso 为 501，answer-iso 参数形状不对），留下半成品 VM。
+13. 非 virtio 网卡设 MTU 时下发 `host_mtu`，VM 起不来 / 热插失败。
+14. 网卡 `link_state=down` 冷启动与热插不生效。
+15. 静默快照不冻结文件系统，库里却记 `quiesced=1`、界面标“应用一致”。
+16. 纳管 VM 的强制断电经 concilium 变成优雅关机（丢 force）。
+17. 运行中克隆不暂停 VM，`qemu-img convert -U` 读到的不是同一时刻的副本。
+18. 向导建 Windows VM 不发 guest OS，时钟用 UTC。
+19. 热添加 CPU / 内存失败时任务仍成功，库里已是新值。
+20. 对已暂停的 VM 点“开机”，库记 running 但 guest 仍冻结；`power_cycle` 在 agent 不可达时把库错写成 shutoff。
+21. 快照回滚、删子树中途失败不撤回，留下混合状态。
+
 ## 11. 快照、备份与迁移
 
 ### 11.1 CBT 与备份
