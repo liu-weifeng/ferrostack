@@ -584,7 +584,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 3. 克隆 Petrel 盘变成空 qcow2，数据丢失（克隆请求不带卷名与存储，`vm_create.rs` 克隆段）。（2026-11-24 已修：克隆体的 Petrel 盘卷名预先定好，建 VM 任务先到源 VM 所在主机经 lictor `petrel_clone_disks` 复制——所有盘同一时刻打临时快照（运行中短暂暂停）→ `petrel-ublk clone --mode copy` → 删临时快照，失败回收新卷；顺带解决 Petrel 盘运行中克隆不一致；未验证）
 4. 运行中删 SATA 盘：agent `update_vm` 先删盘文件，再 `device_del`（SATA 不支持热拔）失败，任务仍成功，关机后数据丢失。（2026-11-24 已修：运行中移除 SATA / IDE 盘或光驱设备直接拒绝；运行中 `update_vm` 不删盘文件，热拔确认完成（lictor 超时后查 `qom-list` 设备仍在则报失败）后再回收，未确认的留到关机后下一次编辑清理；未验证。遗留：冷启动挂的文件盘节点名是 `libvirt-N-*`，热拔时 `blockdev-del hp-*` 删不到，节点会残留到 VM 关机）
 5. 关机时移除的 Petrel 盘，因 `petrel-disks.json` 合并保留旧卷，下次开机又挂回来。（2026-11-24 已修：ferrovirt 把本次移除的 Petrel 卷经 `_petrel_removed` 告知 agent，agent 从 sidecar 摘掉；VM 关机或运行中热拔已确认时回收卷，卷被 VM 快照引用时保留。顺带修了编辑重写 sidecar 丢 `pool` 字段、分层盘编辑后被按默认池服务的问题；未验证）
-6. 编辑后重建配置只传 `vcpu`（库里是最大值），丢 `current_vcpu`，按最大 vCPU 开机、CPU 热添加余量清零；克隆同样。
+6. 编辑后重建配置只传 `vcpu`（库里是最大值），丢 `current_vcpu`，按最大 vCPU 开机、CPU 热添加余量清零；克隆同样。（2026-11-24 已修：`vm_create::vcpu_from_db` 把库里的（最大值, 启动数）还原成请求的（vcpu=启动数, max_vcpu），编辑重建与克隆都走它；未验证）
 7. 单盘 `boot_order` 与全局启动顺序分到同一 bootindex；编辑新增的 SATA 盘与已有 SATA 盘抢同一端口——两种情况 VM 都起不来。
 8. VNC 默认监听 `0.0.0.0`、无密码，websockify 不校验 ticket，控制台无鉴权。
 9. 缓存模式不进 `-blockdev`；discard 只设在 file 节点，TRIM 实际无效。
