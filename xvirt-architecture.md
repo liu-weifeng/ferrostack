@@ -586,7 +586,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 5. 关机时移除的 Petrel 盘，因 `petrel-disks.json` 合并保留旧卷，下次开机又挂回来。（2026-11-24 已修：ferrovirt 把本次移除的 Petrel 卷经 `_petrel_removed` 告知 agent，agent 从 sidecar 摘掉；VM 关机或运行中热拔已确认时回收卷，卷被 VM 快照引用时保留。顺带修了编辑重写 sidecar 丢 `pool` 字段、分层盘编辑后被按默认池服务的问题；未验证）
 6. 编辑后重建配置只传 `vcpu`（库里是最大值），丢 `current_vcpu`，按最大 vCPU 开机、CPU 热添加余量清零；克隆同样。（2026-11-24 已修：`vm_create::vcpu_from_db` 把库里的（最大值, 启动数）还原成请求的（vcpu=启动数, max_vcpu），编辑重建与克隆都走它；未验证）
 7. 单盘 `boot_order` 与全局启动顺序分到同一 bootindex；编辑新增的 SATA 盘与已有 SATA 盘抢同一端口——两种情况 VM 都起不来。（2026-11-24 已修：lictor 启动顺序改在 build 时分配，跳过盘上显式设的和 Petrel 盘已有的 bootindex，`hd` 在 XML 里找不到普通盘时落到 Petrel 系统盘；ferrovirt `assign_pci` 的 SATA 端口先收集已占用的再分空闲的；未验证）
-8. VNC 默认监听 `0.0.0.0`、无密码，websockify 不校验 ticket，控制台无鉴权。
+8. VNC 默认监听 `0.0.0.0`、无密码，websockify 不校验 ticket，控制台无鉴权。（2026-11-24 已修：QEMU VNC 只监听本机且一律 `password=on`（未设密码时拒绝所有连接，老配置里的 0.0.0.0 也收回），websockify 只监听本机；每次申请控制台 ticket，lictor 经 QMP `set_password` 现设 8 位随机密码并 60 s 后过期，ticket 带给前端交 noVNC。旧版本启动的 VM 未开密码认证时 ticket 带 `auth_warning`，重启后生效；未验证。遗留：VNC 认证是 DES 质询、口令最长 8 位，靠一次性 + 短时效弥补；主机 nginx `/vnc/<port>/` 本身不校验用户会话）
 9. 缓存模式不进 `-blockdev`；discard 只设在 file 节点，TRIM 实际无效。
 10. 详情页“关闭 / 重启客户机”发 `guest_shutdown` / `guest_reboot`，后端不认，且前端不报错。
 11. 管理中心新建 VM、编辑 VM、重命名、编辑备注、克隆为模板只显示假任务，不调接口。
