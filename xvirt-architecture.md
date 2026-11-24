@@ -537,9 +537,9 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 021 总线类型 | 部分 | 无 NVMe（静默变 virtio-blk）；Petrel 盘总线固定 vhost-user-blk |
 | 022 置备方式 | 缺失 | 向导有下拉但不下发；lazy / eager 不分 |
 | 023 在线扩容 | 缺失 | 无接口、无 `block_resize` |
-| 024 缓存模式 | 部分 | 落库但 `-blockdev` 不读（缺陷 9） |
+| 024 缓存模式 | 部分 | 已修待验证（缺陷 9） |
 | 025 磁盘 I/O 限速 | 缺失 | — |
-| 026 Discard / TRIM | 部分 | format 节点未开 discard，实际无效（缺陷 9） |
+| 026 Discard / TRIM | 部分 | 已修待验证（缺陷 9）；前端无开关；Petrel 待确认 |
 | 030 添加 / 移除网卡 | 实现 | 运行中改端口组 / VLAN / MTU 不热生效 |
 | 031 网卡型号 | 部分 | 向导缺 e1000e；无白名单；非 virtio 设 MTU 起不来 |
 | 032 MAC 地址 | 部分 | 无 MAC 池；已有网卡 MAC 不能改 |
@@ -587,7 +587,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 6. 编辑后重建配置只传 `vcpu`（库里是最大值），丢 `current_vcpu`，按最大 vCPU 开机、CPU 热添加余量清零；克隆同样。（2026-11-24 已修：`vm_create::vcpu_from_db` 把库里的（最大值, 启动数）还原成请求的（vcpu=启动数, max_vcpu），编辑重建与克隆都走它；未验证）
 7. 单盘 `boot_order` 与全局启动顺序分到同一 bootindex；编辑新增的 SATA 盘与已有 SATA 盘抢同一端口——两种情况 VM 都起不来。（2026-11-24 已修：lictor 启动顺序改在 build 时分配，跳过盘上显式设的和 Petrel 盘已有的 bootindex，`hd` 在 XML 里找不到普通盘时落到 Petrel 系统盘；ferrovirt `assign_pci` 的 SATA 端口先收集已占用的再分空闲的；未验证）
 8. VNC 默认监听 `0.0.0.0`、无密码，websockify 不校验 ticket，控制台无鉴权。（2026-11-24 已修：QEMU VNC 只监听本机且一律 `password=on`（未设密码时拒绝所有连接，老配置里的 0.0.0.0 也收回），websockify 只监听本机；每次申请控制台 ticket，lictor 经 QMP `set_password` 现设 8 位随机密码并 60 s 后过期，ticket 带给前端交 noVNC。旧版本启动的 VM 未开密码认证时 ticket 带 `auth_warning`，重启后生效；未验证。遗留：VNC 认证是 DES 质询、口令最长 8 位，靠一次性 + 短时效弥补；主机 nginx `/vnc/<port>/` 本身不校验用户会话）
-9. 缓存模式不进 `-blockdev`；discard 只设在 file 节点，TRIM 实际无效。
+9. 缓存模式不进 `-blockdev`；discard 只设在 file 节点，TRIM 实际无效。（2026-11-24 已修：lictor `block_cache_opts` 按 libvirt 语义把 cache / io / discard 映射到协议节点与格式节点的 `cache.direct` / `no-flush` / `aio` / `discard` 和设备 `write-cache`，冷启动与热插同一套；`aio=native` 在非 direct 时退成 threads；fulmar 协议节点的缓存不动、只跟 discard。注意默认 `cache=none` 现在真的生效（O_DIRECT），以前实际是 writeback；未验证）
 10. 详情页“关闭 / 重启客户机”发 `guest_shutdown` / `guest_reboot`，后端不认，且前端不报错。
 11. 管理中心新建 VM、编辑 VM、重命名、编辑备注、克隆为模板只显示假任务，不调接口。
 12. 自动应答装机三个接口不通（iso-probe、installation-iso 为 501，answer-iso 参数形状不对），留下半成品 VM。
