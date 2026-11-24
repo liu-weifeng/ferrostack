@@ -594,7 +594,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 13. 非 virtio 网卡设 MTU 时下发 `host_mtu`，VM 起不来 / 热插失败。（2026-11-24 已修：lictor 冷启动与热插只对 virtio-net 下发 `host_mtu`；编辑对话框里非 virtio 网卡的 MTU 输入置灰；未验证）
 14. 网卡 `link_state=down` 冷启动与热插不生效。（2026-11-24 已修：hyper-agent / lictor 的 config_builder 与 guest_config 支持 `<link state='down'/>`，lictor 冷启动在 `cont` 前对断开的网卡 `set_link down`，热插后同样处理；SR-IOV VF 无 QMP 链路控制，仅告警；未验证）
 15. 静默快照不冻结文件系统，库里却记 `quiesced=1`、界面标“应用一致”。（2026-11-24 已修误标：冻结实现前快照一律记崩溃一致，请求了静默的在任务消息里说明；已有记录的 `quiesced=1` 启动时一次性清掉（`ferrovirt_fixup` 记号，不重复执行）；两个创建快照对话框的静默选项置灰并注明暂不支持。真正的静默快照（REQ-VM-071 / 056）仍待 xvirt-tools 加冻结；未验证）
-16. 纳管 VM 的强制断电经 concilium 变成优雅关机（丢 force）。
+16. 纳管 VM 的强制断电经 concilium 变成优雅关机（丢 force）。（2026-11-24 已修：hyper-agent 对纳管 VM 的强制断电在 `conc resource stop` 前写一次性标记 `/run/xvirt/force-stop/<vm>`，RA stop 见到 5 分钟内的标记就 `lictor stop --force`，用完删除；power_cycle、强制删除同受益；未验证）
 17. 运行中克隆不暂停 VM，`qemu-img convert -U` 读到的不是同一时刻的副本。
 18. 向导建 Windows VM 不发 guest OS，时钟用 UTC。（2026-11-24 已修时钟：单机向导请求带 `guest_os_family` / `guest_os_id`，后端给 Windows 用 localtime；已建好的 Windows VM 仍是 utc，需手工改；`hyperv` 特性仍不被 complete() / config_builder 消费，未处理；未验证）
 19. 热添加 CPU / 内存失败时任务仍成功，库里已是新值。（2026-11-24 已修：运行中热生效有任何一项失败，编辑任务报失败；CPU / 内存热添加失败时把库里的启动 vCPU / 启动内存回退到热添加前的值并重写 config.xml；网卡 / 磁盘等其它热插失败时改动保留、注明下次开机生效；未验证）
