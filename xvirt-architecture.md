@@ -328,6 +328,12 @@ qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写�
 - **VM 只要有一块盘在 NFS 上，就不支持快照**（建快照时拒绝并说明原因）。所属存储在 NFS、盘都在 Petrel 的 VM 可以快照，元数据与内存文件写在 NFS 上的 VM 目录。
 - 现有 `plan_snapshot_mode` 按"所有盘同一类型"选模式、混合即退到未实现的 `V1_QCOW2_CHAIN`，要改成**按盘选**快照方式。
 
+**1.0 实现（2026-11-24）：**
+
+- ferrovirt 建快照时按盘规划（不再依赖建 VM 时定的 `vm_config.snapshot_mode`）：文件盘按所在数据存储类型选 reflink 模式，Petrel 盘为卷快照（盘级 backend `V2_RBD_NATIVE`，artifact `<卷>@<快照 uuid>`）；全是同一种 reflink 时 VM 级模式不变，否则为 `V2_PER_DISK`。每块盘的方式记在 `vm_snapshot_disk.storage_backend`，回滚 / 删除按盘分派。
+- **Petrel 盘快照 1.0 只支持 VM 关机时**：petrel-vhost 还没有控制通道，卷被服务时打不了一致快照；petrel-ublk 的在线控制命令也不等执行结果。关机时 lictor 调 `petrel-ublk snapshot / rollback / rmsnap --vol`（离线，`rollback` / `rmsnap` 的离线路径是这次在 petrel 补的）。运行中带 Petrel 盘的 VM 创建快照、删除含 Petrel 盘的快照都会被拒绝并提示关机；带内存快照因此也不能含 Petrel 盘。
+- 待做：petrel-vhost 补带确认的控制通道后，开放运行中的 Petrel 盘快照与内存快照。
+
 #### 8.2.4 迁移
 
 **高级选项。** VM 迁移（在线、离线）增加"高级选项"：
@@ -372,7 +378,7 @@ qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写�
 2. ~~所属存储不记库~~（2026-11-24 已改：`vm_config.owner_datastore_uuid / _seg`，ferrovirt `service/vm_owner.rs`）。原问题：至少五处从磁盘路径反推（`write.rs:45-63` 的 SQL 没排除光驱、`vm_update.rs:1027-1032`、`snapshot.rs:106-119`、`vm_create.rs:1178-1207`、`snapshot_migrate.rs:644`）；只有 Petrel 盘的 VM 编辑 / 快照 / 克隆会失败或定位错。
 3. ~~NVRAM 在主机本地~~（2026-11-24 已改：放 VM 目录 `nvram.fd`，老 VM 启动时接续旧文件）。原问题：NVRAM 在主机本地 `/var/lib/libvirt/qemu/nvram/<uuid>_VARS.fd`（`vm_create.rs:33,212`），迁移、克隆、HA 后 UEFI 变量被模板重置，删除 VM 时残留。
 4. 全栈没有 `fulmar` 数据存储类型（ferrovirt、hyper-agent 注册表、lictor、xvirt-client 均无）；fulmar 本身集群模式代码未编译未测试。
-5. 快照：只有 xfs / ocfs2 / btrfs 纯 reflink 可用；任何带 Petrel 盘或混合存储的 VM 都落到未实现的 `V1_QCOW2_CHAIN`（`vm_create.rs:964-984`、`snapshot.rs:279-288`），Petrel 卷快照原语 ferrovirt 没调用。自动化用例 `stage60.vm.snapshot` 因此跳过。NFS 盘拒绝快照的提示也要按 §8.2.3 明确。
+5. （2026-11-24 已改为按盘快照并接上 Petrel 卷快照，见 §8.2.3「1.0 实现」；Petrel 盘只支持关机时。）原问题：快照：只有 xfs / ocfs2 / btrfs 纯 reflink 可用；任何带 Petrel 盘或混合存储的 VM 都落到未实现的 `V1_QCOW2_CHAIN`（`vm_create.rs:964-984`、`snapshot.rs:279-288`），Petrel 卷快照原语 ferrovirt 没调用。自动化用例 `stage60.vm.snapshot` 因此跳过。NFS 盘拒绝快照的提示也要按 §8.2.3 明确。
 6. （2026-11-24 已加迁移高级选项与所属存储共享判断，见 §8.2.4「1.0 实现范围」；跨主机仍要求盘全在 Petrel。）原问题：在线迁移只接受"盘全在 Petrel"的 VM，没有按盘选存储和选所属存储的选项；目的端 VM 目录取该主机第一个 `xfs/local` 数据存储（`vm_migrate.rs:64-78,99-114`），不支持所属存储在 NFS；只带 `config.xml` 与 `petrel-disks.json`（`lictor/lictor/vm/migration.py:85-124`），丢 NVRAM / placement / memtier / snapshots；源目录不删；所属存储共享时 abort 的 `rmtree` 会删掉共享目录。
 7. 克隆 Petrel 盘会变成 VM 目录里的空 qcow2（`vm_create.rs:1229-1237`），数据丢失。
 8. HA：ferrovirt 不向 concilium 注册 VM 资源；lictor 靠扫 `/datastore/*/<uuid>/config.xml` 找 VM，隐含要求 VM 目录在共享存储上。
