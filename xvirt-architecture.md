@@ -412,7 +412,7 @@ qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写�
 | REQ-NET-002 OVS | 基本实现 | MTU 不生效；端口组的安全 / 整形策略只写 `external_ids`，数据面不生效 |
 | REQ-NET-004 端口组 | 部分 | VLAN 不进数据面（缺陷 2）；删除不查在用 VM；不校验端口组在 VM 所在主机；前端不传 `port_group_type` |
 | REQ-NET-006 Bond | 基本缺失 | 没有主机级 bond API；只有 OVS 端口组 teaming 的副作用 bond（active-backup / balance-slb，无 LACP） |
-| REQ-NET-008 流量分离 | 缺失 | vmotion / storage 端口组类型只是标签；在线迁移固定走管理 IP（`vm_migrate.rs:136-149`），Petrel mon/osd 也只用管理 IP |
+| REQ-NET-008 流量分离 | 部分 | 在线迁移可按网段选迁移网络（2026-11-24，见 §10.4）；vmotion / storage 端口组类型仍只是标签，Petrel mon/osd 只用管理 IP |
 | REQ-NET-009 物理网卡信息 | 部分 | agent 采集齐全，入库路径被缺陷 3 打断；无双工 |
 | REQ-VM-030 / 077 网卡增删、热插 | 实现 | 缺陷 1、缺陷 4 |
 | REQ-VM-031 网卡型号 | 实现 | 后端无白名单，任意字符串直传 QEMU；`driver_queues` 不生成多队列 |
@@ -478,7 +478,9 @@ VM PATCH 是稀疏 patch，设备列表用 `add/remove/update` 三段。控制�
 
 ### 10.4 在线迁移
 
-ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incoming`（目标，QEMU `-incoming` 用 TCP 49152–49200）→ `migrate_out` → `migrate_finish` / `migrate_abort`。QEMU 11.1 fork 带按热度的迭代 pre-copy。memtier VM 可以用 `memtier-shared-backing` 迁移能力：后端共享，不搬冷页（QEMU 侧自标 WIP，跨主机实测未确认）。
+ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incoming`（目标，QEMU `-incoming` 用 TCP 49152–49200）→ `migrate_out` → `migrate_finish` / `migrate_abort`。
+
+迁移网络（REQ-CLU-016，2026-11-24）：迁移请求可带 `migration_network`（CIDR 或 `management`），不带时用集群默认网段（`cluster.migration_network`，`PUT /api/vcenter/cluster/{id}/migration-network`），都没有走目的主机管理 IP。选定网段后 ferrovirt 实时调目的主机 agent `scan_network`，取它在该网段的地址作为 `-incoming` 监听地址和源端连接地址；目的主机在该网段无地址则迁移前报错。代码 `service/migrate_net.rs`。QEMU 11.1 fork 带按热度的迭代 pre-copy。memtier VM 可以用 `memtier-shared-backing` 迁移能力：后端共享，不搬冷页（QEMU 侧自标 WIP，跨主机实测未确认）。
 
 ## 11. 快照、备份与迁移
 
