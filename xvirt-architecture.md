@@ -411,7 +411,7 @@ qemu-img / 上传 / 备份 ── FUSE 网关（仅管理用途，活盘禁写�
 | REQ-NET-001 Linux Bridge | 部分 | VM 网卡在 Linux Bridge 上起不来（见缺陷 1）；只走 nmcli，无 NetworkManager 的主机不建桥；uplink 失败仍报成功；标准交换机 uplink 不落 `virtual_switch_uplink`；删除不还原网卡原连接 |
 | REQ-NET-002 OVS | 基本实现 | MTU 不生效；端口组的安全 / 整形策略只写 `external_ids`，数据面不生效 |
 | REQ-NET-004 端口组 | 部分 | VLAN 不进数据面（缺陷 2）；删除不查在用 VM；不校验端口组在 VM 所在主机；前端不传 `port_group_type` |
-| REQ-NET-006 Bond | 基本缺失 | 没有主机级 bond API；只有 OVS 端口组 teaming 的副作用 bond（active-backup / balance-slb，无 LACP） |
+| REQ-NET-006 Bond | 已实现未验证（2026-11-24） | 主机级 bond：`GET/POST /api/vcenter/host/{host}/bonds`、`DELETE …/bonds/{name}`，hyper-agent `support/bond_util.py` 经 nmcli 落地（七种模式、LACP 速率、哈希策略、MTU，重启保持）；有地址 / 默认路由出口 / 已属于桥的网卡不能加入，作为交换机上行的 bond 不能删；物理网卡页可管理。仅支持 NetworkManager 主机；OVS 端口组 teaming 的 bond 仍是另一条路径 |
 | REQ-NET-008 流量分离 | 部分 | 在线迁移可按网段选迁移网络（2026-11-24，见 §10.4）；vmotion / storage 端口组类型仍只是标签，Petrel mon/osd 只用管理 IP |
 | REQ-NET-009 物理网卡信息 | 部分 | agent 采集齐全，入库路径被缺陷 3 打断；无双工 |
 | REQ-VM-030 / 077 网卡增删、热插 | 实现 | 缺陷 1、缺陷 4 |
