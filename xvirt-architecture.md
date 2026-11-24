@@ -546,8 +546,8 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 034 网卡限速 | 已实现未验证（2026-11-24） | 每块网卡流入 / 流出的平均、峰值、突发（沿用 `vm_network_interface.bandwidth_*`，KB/s）；lictor 在 tap 上用 tc 下发（流入 htb、流出 ingress police），开机建 tap 后、热添加时、运行中修改时生效；编辑 VM 网卡卡片可设（Mbit/s）。SR-IOV 直通网卡不支持；端口组 shaping 仍只写 OVS external_ids（未生效，另算） |
 | 035 链路断开 / 连接 | 部分 | 运行中、冷启动、热插均已处理（缺陷 14 待验证）；向导“开机时连接”不下发 |
 | 037 光驱与 ISO | 基本实现 | 运行中重新勾选“已连接”不生效；不能热加光驱 |
-| 038 USB 直通 | 缺失 | config_builder TODO，不生成 usb-host |
-| 039 PCI 直通 | 缺失 | 同上；vfio-pci 只用在 SR-IOV 网卡 |
+| 038 USB 直通 | 已实现未验证（2026-11-24） | `vm_hostdev_usb`：按厂商 / 产品 ID 或按主机总线 + 端口（新列 `source_port`）匹配，QEMU `usb-host`；需 VM 有 USB 控制器；运行中可热插 / 热拔；编辑 VM“其他设备 → USB 设备（直通）”从主机设备列表选 |
+| 039 PCI 直通 | 已实现未验证（2026-11-24） | `vm_hostdev_pci`：开机前 lictor 把设备及同 IOMMU 组端点绑 vfio-pci（主机在用的带 IP 网卡 / 已挂载盘拒绝），QEMU `vfio-pci` 挂独立 root port，可选关 ROM；运行中可热插 / 热拔；不再被任何 VM 配置时还给主机驱动；`GET /api/vcenter/host/{host}/passthrough-devices` 列可直通设备（IOMMU 组、驱动、主机在用、已配置给哪台 VM）。同一设备同时只给一台运行中的 VM；有直通设备不能迁移 / 拍内存快照。未做：HA 切换到别的主机时设备不存在（会开机失败）、GPU 专项（vGPU / 主显卡）、mdev |
 | 041 vTPM 2.0 | 实现 | 状态在主机本地，HA / 冷迁移后丢（待确认是否在验收范围） |
 | 046 BIOS / UEFI | 实现 | — |
 | 047 安全启动 | 实现 | — |
