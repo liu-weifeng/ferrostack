@@ -591,7 +591,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 10. 详情页“关闭 / 重启客户机”发 `guest_shutdown` / `guest_reboot`，后端不认，且前端不报错。（2026-11-24 已修：后端新增这两个动作，经 xvirt-tools `os.shutdown` / `os.reboot`；关闭客户机在 tools 不可用时退回 ACPI 关机，重启客户机在 tools 不可用时报错、不悄悄换成硬重置；前端补上失败提示；未验证）
 11. 管理中心新建 VM、编辑 VM、重命名、编辑备注、克隆为模板只显示假任务，不调接口。（2026-11-24 已修：新建 VM（仅“新建”类型）、编辑设置（名称 / vCPU / 内存）、重命名、编辑备注、克隆虚拟机接到真实接口；克隆为模板及其余没接后端的入口（主机维护模式 / 电源、导出日志、新建数据存储、点亮定位灯、池编辑等）不再本地模拟进度报成功，一律记为失败任务“暂未实现”；任务跟踪 60 s 超时不再兜底标“完成”；未验证）
 12. 自动应答装机三个接口不通（iso-probe、installation-iso 为 501，answer-iso 参数形状不对），留下半成品 VM。（2026-11-24 已修：ferrovirt 实现 `iso-probe`（转 agent `probe_iso`）、`answer-preview`（`build_answer_file` 并解码内容）、`installation-iso`（写 `vm.installation_iso_path`，要求关机、路径须在 `/datastore/` 下，开机时既有的 `extra_cdrom_path` 链路挂上）；`answer-iso` 认 `vm_uuid` / `vm` 字符串 / `vm.uuid`，应答格式不再一律 kickstart 而按探测结果选，输出目录用所属存储；未验证）
-13. 非 virtio 网卡设 MTU 时下发 `host_mtu`，VM 起不来 / 热插失败。
+13. 非 virtio 网卡设 MTU 时下发 `host_mtu`，VM 起不来 / 热插失败。（2026-11-24 已修：lictor 冷启动与热插只对 virtio-net 下发 `host_mtu`；编辑对话框里非 virtio 网卡的 MTU 输入置灰；未验证）
 14. 网卡 `link_state=down` 冷启动与热插不生效。
 15. 静默快照不冻结文件系统，库里却记 `quiesced=1`、界面标“应用一致”。（2026-11-24 已修误标：冻结实现前快照一律记崩溃一致，请求了静默的在任务消息里说明；已有记录的 `quiesced=1` 启动时一次性清掉（`ferrovirt_fixup` 记号，不重复执行）；两个创建快照对话框的静默选项置灰并注明暂不支持。真正的静默快照（REQ-VM-071 / 056）仍待 xvirt-tools 加冻结；未验证）
 16. 纳管 VM 的强制断电经 concilium 变成优雅关机（丢 force）。
