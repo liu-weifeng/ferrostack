@@ -557,7 +557,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 052 控制台快捷操作 | 部分 | 有 Ctrl+Alt+Del，无粘贴文本 |
 | 054 Guest 信息 | 部分 | OS / IP / tools 版本通；`/guest/info`、`/guest/metrics` 501，主机名、磁盘用量拿不到 |
 | 055 优雅关机重启 | 部分 | 详情页“关闭 / 重启客户机”已走 xvirt-tools（关机不可用时退 ACPI）；通用“关机”（stop）仍是 ACPI + 60 s 强杀，未先走 tools |
-| 056 文件系统冻结 | 缺失 | xvirt-tools 无 freeze RPC |
+| 056 文件系统冻结 | 已实现未验证（2026-11-24） | xvirt-tools `fs.freeze` / `fs.thaw` / `fs.status`（Linux FIFREEZE / FITHAW，逐个可写文件系统、逆挂载顺序冻结，自带超时自动解冻，默认 60 s 最长 600 s）；Windows（VSS）未做 |
 | 059 Tools 安装升级 | 缺失 | 无安装 ISO / 包、无升级提示 |
 | 060 转换为模板 | 已实现未验证（2026-11-24） | 见 docs/vm-template-design.md §10：模板 = VM 加标记，不能开机可编辑 |
 | 061 从模板部署 | 已实现未验证（2026-11-24） | 单台 / 批量部署，快速部署按盘 reflink，xvirt-tools 客户机定制 |
@@ -568,7 +568,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 068 恢复快照 | 部分 | 无“恢复后开机”；NVRAM 与 VM 配置不进快照；多盘回滚失败已可撤回（缺陷 21，待验证） |
 | 069 删除快照 | 部分 | 删中间节点须连子树；无“删除全部”；子树删除有缺陷 2 |
 | 070 快照树 | 实现 | 受缺陷 2 影响 |
-| 071 静默快照 | 缺失 | 未实现冻结；误标“应用一致”已修（缺陷 15），选项置灰 |
+| 071 静默快照 | 已实现未验证（2026-11-24） | 运行中不含内存的快照：冻结 → 暂停 → 拍 → 恢复 → 解冻；冻结失败可选降级为崩溃一致（默认）或中止；库里 `quiesced` 按实际结果记录；仅 Linux 客户机 |
 | 072 内存分层快照 | 基本实现 | 默认 auto 而非 keep；恢复时不能选 keep / merge |
 | 074 CPU 热添加 | 部分 | 向导勾选不下发；编辑后余量被清（缺陷 6） |
 | 075 内存热添加 | 部分 | 向导勾选不下发；无 virtio-mem |
