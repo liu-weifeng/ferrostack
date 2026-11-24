@@ -565,7 +565,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 063 链接克隆 | 缺失 | — |
 | 065 Linux 定制 | 缺失 | 无 cloud-init 数据源 |
 | 067 创建快照 | 部分 | Petrel / fulmar / 混合存储写库失败（缺陷 1） |
-| 068 恢复快照 | 部分 | 无“恢复后开机”；NVRAM 与 VM 配置不进快照；多盘回滚中途失败不撤回 |
+| 068 恢复快照 | 部分 | 无“恢复后开机”；NVRAM 与 VM 配置不进快照；多盘回滚失败已可撤回（缺陷 21，待验证） |
 | 069 删除快照 | 部分 | 删中间节点须连子树；无“删除全部”；子树删除有缺陷 2 |
 | 070 快照树 | 实现 | 受缺陷 2 影响 |
 | 071 静默快照 | 缺失 | 未实现冻结；误标“应用一致”已修（缺陷 15），选项置灰 |
@@ -599,7 +599,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 18. 向导建 Windows VM 不发 guest OS，时钟用 UTC。（2026-11-24 已修时钟：单机向导请求带 `guest_os_family` / `guest_os_id`，后端给 Windows 用 localtime；已建好的 Windows VM 仍是 utc，需手工改；`hyperv` 特性仍不被 complete() / config_builder 消费，未处理；未验证）
 19. 热添加 CPU / 内存失败时任务仍成功，库里已是新值。（2026-11-24 已修：运行中热生效有任何一项失败，编辑任务报失败；CPU / 内存热添加失败时把库里的启动 vCPU / 启动内存回退到热添加前的值并重写 config.xml；网卡 / 磁盘等其它热插失败时改动保留、注明下次开机生效；未验证）
 20. 对已暂停的 VM 点“开机”，库记 running 但 guest 仍冻结；`power_cycle` 在 agent 不可达时把库错写成 shutoff。（2026-11-24 已修：暂停的 VM 点开机改走恢复（resume）；强杀重启在强杀失败时报错且不改状态；开机与各电源动作在 agent 报失败时都不再改库里的电源状态；未验证）
-21. 快照回滚、删子树中途失败不撤回，留下混合状态。
+21. 快照回滚、删子树中途失败不撤回，留下混合状态。（2026-11-24 已修：lictor 回滚改为预检 → 每块盘留回滚前状态（文件盘改名 `.revert-bak`、fulmar reflink 备份、Petrel 临时快照 `revert-bak-*`）→ 逐盘回滚，任一失败全部撤回再报错，成功后删备份；ferrovirt 删子树先整棵标 DELETING，每删成功一个节点立即落库，中途失败时没删到的恢复 ACTIVE、报出已删数；未验证。遗留：含内存快照的回滚，盘已换好后起 QEMU 失败时不撤回盘）
 
 ## 11. 快照、备份与迁移
 
