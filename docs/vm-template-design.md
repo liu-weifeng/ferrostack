@@ -155,6 +155,8 @@ os.customize {
 
 流程：部署完成 → 开机 → 等 lictor 报告 xvirt-tools 上线（`vm.guest.state`，带超时，默认 5 分钟）→ 控制面下发 `os.customize` → 需要时 `os.reboot` → 再等 tools 上线并回读 `ip.list` 核对 IP → 子任务成功。
 
+更正（2026-11-24 实施时核对）：xvirt-tools 原有的 `net.apply` / `os.set_password` / `ssh.add_authorized_key` 在 Windows 上**只是占位**（直接报未实现）。第一期已补：Windows 网络用 `netsh`、密码用 `net user`、主机名用 `Rename-Computer`（重启生效）；Windows 上 SSH 公钥、时区、machine-id 不做（SID 去重需要 sysprep，REQ-VM-066）。
+
 优点：自研、Linux / Windows 一套、可回读确认；缺点：**模板里必须装好 xvirt-tools**，且首次开机时客户机先用模板里的网络配置跑一小段时间。**模板应配置为 DHCP**（或无网络），避免多台同时带模板的静态 IP 上线冲突——转换为模板时在界面提示。
 
 **备选：cloud-init NoCloud。** 为每台 VM 生成一张卷标 `cidata` 的小 ISO（`meta-data` / `user-data` / `network-config`），作为一次性安装介质挂上（复用 `installation_iso_path` 与开机临时光驱链路，关机自动摘除）。优点是网络配置在网络起来之前生效、行业通行；缺点是只适用于装了 cloud-init 的 Linux 模板，Windows 需另走 sysprep / unattend（REQ-VM-066，P2）。
@@ -246,3 +248,14 @@ os.customize {
 | 5 | 批量上限与并发 | 单次最多 100 台，默认并发 4 台 |
 | 6 | 模板带快照 | 允许，部署只用当前盘状态 |
 | 7 | 需求范围 | REQ-VM-064 批量部署调入 1.0；REQ-VM-063 链接克隆 1.1 |
+
+## 10. 第一期实施（2026-11-24，未编译未实测）
+
+| 仓 | 实现 |
+|---|---|
+| ferrovirt | `service/vm_template.rs`：`vm.is_template` / `template_uuid` 列与 `vm_template_deploy` 表；转换（转模板释放 SR-IOV VF、网卡记 `type=sriov`；转回重新分配并重写配置）；开机 / 强杀重启 / 控制台入口拦截模板；逐盘复制方式 `disk_copy_plan`；`deploy-options`；部署父任务（名称 / 主机 / IP 展开、整批查重名、并发 4、逐台克隆子任务并等待、开机、经 `xvt_exec` 下发 `os.customize`、需要时重启、回读 IP）；部署记录与失败项重试。`clone_vm_task` 支持 `fast`（逐盘 `copy_mode`）、`_as_template`（克隆模板默认仍是模板）、`_template_uuid`、`overrides`（vcpu / memory）；VM 列表 `?templates=exclude|only|include`，详情带 `is_template` |
+| hyper-agent | `image.clone_img(copy_mode)`：`reflink` → fulmar 控制 API reflink / `cp --reflink=always`，失败退回整盘拷贝；`full` → 一律整盘拷贝（fulmar 同存储也不 reflink） |
+| xvirt-tools | 新 RPC `os.customize`（machine-id / SSH 主机密钥重新生成、主机名、时区、用户密码与 SSH 公钥、按 MAC 配各网卡），各项独立执行、错误汇总返回；Windows 补 `netsh` 网络、`net user` 密码、`Rename-Computer` 主机名 |
+| xvirt-client | `DeployFromTemplateDialog`（名称模式 / 数量 / 起始序号、多主机、所属存储、快速部署及逐盘预估、部署后开机、客户机定制、逐台预览）；VM 列表“虚拟机 / 模板”切换、模板标记、右键转换 / 部署；详情页模板工具栏；新建向导“从模板部署”入口接到部署对话框；管理中心“克隆为模板”走克隆接口 |
+
+遗留：Petrel 瘦克隆（1.1）、cloud-init 通道（第二期）、首次启动脚本、管理中心的部署向导（OVF 向导仍是假数据）、克隆模板时 SR-IOV 网卡仍会分配 VF。
