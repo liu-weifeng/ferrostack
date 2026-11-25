@@ -582,26 +582,31 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 **编辑生效规则（2026-11-25 已实现未验证）**：编辑 VM 与端口组 / 集群归属时，库和底层配置只在确认生效后才算改了，没生效就撤销。
 - **撤销点**：ferrovirt 编辑前在同一条数据库连接上把 VM 的 `vm` / `vm_config` / 设备表 / SR-IOV VF 行拷进临时表（`service/vm_edit_undo.rs`），失败时整体或按单项恢复：新插的行删掉、删掉的行插回、改过的列改回；`vm` 表只恢复名称 / 描述 / 自启，状态列不动。
 - **关机编辑**：hyper-agent `update_vm` 改为“要么全部生效，要么不留痕迹”——建新盘 / Petrel 卷（记下本次新建的）→ 离线扩容 → 备份后写 config.xml 与 sidecar → 最后删本次移除的盘；前三步任一失败就删掉本次新建的盘和卷、恢复 config.xml，ferrovirt 再把库整体撤回，任务失败。同一次编辑里的改名等其它改动也一起撤回。
-- **一次编辑是一个整体**（运行中与关机都一样）：上层接口是“编辑虚拟机”，底层拆成原子接口，一次只做一件事、失败时自己清掉做了一半的东西。
+- **多项修改各自生效**：一次编辑同时改多项时，成功生效的保留；没生效的那项单独回滚，任务报失败，消息里列出没生效的项和回滚了什么。
+- **底层原子接口**：上层接口是“编辑虚拟机”，底层拆成原子接口，一次只做一件事、失败时自己清掉做了一半的东西。
   - hyper-agent：`vm_disk_create` / `vm_disk_delete`；`update_vm` 只写 config.xml 与 sidecar。
-  - lictor（经 hyper-agent 转发）：`vm_disk_attach` / `vm_disk_detach` / `vm_disk_resize` / `vm_disk_throttle` / `vm_cdrom_change` / `vm_nic_attach` / `vm_nic_detach` / `vm_nic_set_link` / `vm_nic_bandwidth` / `vm_cpu_hotplug` / `vm_mem_hotplug` / `vm_hostdev_attach` / `vm_hostdev_detach` / `vm_placement_set`，以及只读的 `vm_live_preflight`。
+  - lictor（经 hyper-agent 转发）：`vm_disk_attach` / `vm_disk_detach` / `vm_disk_resize` / `vm_disk_throttle` / `vm_cdrom_change` / `vm_nic_attach` / `vm_nic_detach` / `vm_nic_set_link` / `vm_nic_bandwidth` / `vm_cpu_hotplug` / `vm_mem_hotplug` / `vm_hostdev_attach` / `vm_hostdev_detach` / `vm_placement_set`，以及只读预检 `vm_live_preflight`（当前编辑流程不调用）。
 - **ferrovirt 的编排**（`edit_vm`）：
-  1. 拟改写库；
-  2. 运行中先预检：空闲 PCIe 插槽、SCSI 控制器、CPU 插槽、内存 slots / maxmem 余量、要改或要拔的设备在不在、设备 id 撞名、已有磁盘文件、PCI 设备是否存在，任一不满足就直接拒绝，什么都不改；
-  3. 逐块建新盘；
-  4. 逐个调用热插拔：撤得回的先做，撤不回的（在线扩容、热加 CPU、热加内存）最后做；
-  5. 全部成功才写 config.xml，并回收移除的盘。
-- **失败处理**：任一步失败就按相反顺序调用每项的反向操作（随 op 附带的 `undo`：拔掉刚插的、插回刚拔的、换回原光盘、恢复限速 / 链路 / 放置），库整体恢复，删掉本次新建的盘，config.xml 不动，任务失败。
-- **撤不回的项**（客户机不释放设备等）：先在撤销点里记成当前值再恢复库，库和 config.xml 按实际状态保留，任务消息里列出。
+  1. 拟改写库，校验不过整体撤销；
+  2. 逐块建新盘，建不出来的那块算失败；
+  3. 运行中逐个调用热插拔，某项失败不影响其它项；
+  4. 失败项单独回滚：
+     - 新加的盘：库里撤掉，并删掉本次新建的文件或卷；挂进来的已有磁盘不删；
+     - 拔除：插回库里；
+     - 限速 / 链路 / 光驱 / 扩容 / CPU / 内存 / 放置：改回原值；
+  5. 按库（已生效的项加冷改动）写 config.xml，只回收确实拔下来的盘。
+- **写配置失败**：
+  - 关机编辑：等于这次什么都没生效，整体撤销并删掉新建的盘；
+  - 运行中：已生效的热插拔不撤，任务报失败并提示 config.xml 没跟上。
 - **删盘**：不再扫 VM 目录、删“不在配置里”的盘文件（那样会误删放进目录、还没挂上的盘），只删本次移除、且在本 VM 目录 `/datastore/<段>/<vm uuid>/` 下的文件盘。关机时随配置重写删，运行中等热拔确认后删；挂进来的已有磁盘和 ISO 一律不删。
 - **挂已有磁盘**：编辑加盘可选“挂已有磁盘”（`disks.add[].existing_path`）。文件须在数据存储上，格式为 qcow2 或 raw，且没被任何 VM 用着；挂载时不复制。热插失败回滚、以后从 VM 移除时，都不会删除这个文件。
 - **端口组**：新建或修改时，下发到主机失败就撤销——新建的删掉这一行，修改的用 `service/row_undo.rs` 把整行改回，再把旧配置推回已经下发成功的主机，接口报错。hyper-agent `port_group_apply` 子项有错误时改为报失败，LACP 降级算告警，不算失败。分布式交换机只下发到状态为 ok 的成员。
 - **主机加入 / 移出集群**：concilium 调和有任一节点失败，或本机退出失败，就把库里的归属改回去，按旧归属再调和一次，任务失败。主机 agent 不在线时，移出照常进行。调和成功后才触发分布式交换机自动加入。
 - **测试**：xvirt-autotest 新增 stage 64 `edit_rollback.*` 五条失败用例：
-  - 关机加盘失败整体撤销；
+  - 关机编辑一块盘建不出来：只回滚这一块，同次的改名、移除、新盘、挂已有磁盘都生效；
   - 运行中 SATA / 光驱热加被拒绝；
-  - 运行中热插数量超过空闲插槽，被预检拒绝；
-  - 运行中执行到一半失败（已有磁盘被占写锁），已生效的光盘更换与新 SCSI 盘被撤回；
+  - 运行中一次热插超过空闲插槽的盘：插上的保留，插不上的撤库删文件；
+  - 运行中挂被占写锁的已有磁盘失败：只回滚这一项、文件保留，同次的换光盘与新 SCSI 盘生效；
   - 端口组下发失败恢复。
 
   另外 `hotplug.disk_sata` 改为断言拒绝；hyper-agent 新增 `tests/test_update_vm_rollback.py`，lictor 新增 `tests/test_live_atomic.py`。
