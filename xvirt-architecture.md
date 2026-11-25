@@ -574,10 +574,38 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 072 内存分层快照 | 基本实现 | 默认 auto 而非 keep；恢复时不能选 keep / merge |
 | 074 CPU 热添加 | 部分 | 向导勾选不下发；编辑后余量被清（缺陷 6） |
 | 075 内存热添加 | 部分 | 向导勾选不下发；无 virtio-mem |
-| 076 磁盘热插拔 | 部分 | 运行中删 SATA / IDE 已拒绝（缺陷 4，已实测）；运行中热加 SATA 盘 QEMU 不支持（AHCI 无热插），后端未提前拦截，任务失败但配置已保存（2026-11-25 autotest 跳过 `hotplug.disk_sata` 发现）；热插盘不带 cache / discard |
+| 076 磁盘热插拔 | 部分 | 运行中删 SATA / IDE 已拒绝（缺陷 4，已实测）；运行中热加 SATA / IDE 盘、光驱设备直接拒绝，库和盘文件都不动（2026-11-25 已实现未验证，原先写库后任务失败）；热插失败的回滚见下方“编辑生效规则” |
 | 077 网卡热插拔 | 实现 | 热插忽略 link_state |
 | 080 镜像导入 | 已实测（2026-11-25，`storage.upload_and_browse`、`vm_feat.disk_import`；测试中修：上传流式转发的 Multipart 借用改经有界 mpsc 转 'static 流） | 上传：数据存储文件上传接口（原 501）实现，ferrovirt 边收边转到主机 hyper-agent 文件传输通道（5557，一次性令牌 PUT），不经 ZMQ；导入：编辑 VM 加盘选“导入磁盘镜像”，提交前在 VM 所在主机 `image_info` 探测格式（qcow2 / raw / vmdk / vhdx / vhd / vdi）与容量，新盘记 `vm_disk.import_src`，agent `update_vm` 用 `qemu-img convert` 生成（展平 backing，fulmar 上转 raw），完成后清空；导入时 update_vm 超时放宽到 1 小时。Petrel 目标不支持；新建 VM 向导里不能直接导入（建好再加盘） |
 | 085 Guest OS 清单 | 缺失 | 无清单、无 virtio-win、tools 无安装包 |
+
+**编辑生效规则（2026-11-25 已实现未验证）**：编辑 VM 与端口组 / 集群归属时，库和底层配置只在确认生效后才算改了，没生效就撤销。
+- **撤销点**：ferrovirt 编辑前在同一条数据库连接上把 VM 的 `vm` / `vm_config` / 设备表 / SR-IOV VF 行拷进临时表（`service/vm_edit_undo.rs`），失败时整体或按单项恢复：新插的行删掉、删掉的行插回、改过的列改回；`vm` 表只恢复名称 / 描述 / 自启，状态列不动。
+- **关机编辑**：hyper-agent `update_vm` 改为“要么全部生效，要么不留痕迹”——建新盘 / Petrel 卷（记下本次新建的）→ 离线扩容 → 备份后写 config.xml 与 sidecar → 最后删本次移除的盘；前三步任一失败就删掉本次新建的盘和卷、恢复 config.xml，ferrovirt 再把库整体撤回，任务失败。同一次编辑里的改名等其它改动也一起撤回。
+- **一次编辑是一个整体**（运行中与关机都一样）：上层接口是“编辑虚拟机”，底层拆成原子接口，一次只做一件事、失败时自己清掉做了一半的东西。
+  - hyper-agent：`vm_disk_create` / `vm_disk_delete`；`update_vm` 只写 config.xml 与 sidecar。
+  - lictor（经 hyper-agent 转发）：`vm_disk_attach` / `vm_disk_detach` / `vm_disk_resize` / `vm_disk_throttle` / `vm_cdrom_change` / `vm_nic_attach` / `vm_nic_detach` / `vm_nic_set_link` / `vm_nic_bandwidth` / `vm_cpu_hotplug` / `vm_mem_hotplug` / `vm_hostdev_attach` / `vm_hostdev_detach` / `vm_placement_set`，以及只读的 `vm_live_preflight`。
+- **ferrovirt 的编排**（`edit_vm`）：
+  1. 拟改写库；
+  2. 运行中先预检：空闲 PCIe 插槽、SCSI 控制器、CPU 插槽、内存 slots / maxmem 余量、要改或要拔的设备在不在、设备 id 撞名、已有磁盘文件、PCI 设备是否存在，任一不满足就直接拒绝，什么都不改；
+  3. 逐块建新盘；
+  4. 逐个调用热插拔：撤得回的先做，撤不回的（在线扩容、热加 CPU、热加内存）最后做；
+  5. 全部成功才写 config.xml，并回收移除的盘。
+- **失败处理**：任一步失败就按相反顺序调用每项的反向操作（随 op 附带的 `undo`：拔掉刚插的、插回刚拔的、换回原光盘、恢复限速 / 链路 / 放置），库整体恢复，删掉本次新建的盘，config.xml 不动，任务失败。
+- **撤不回的项**（客户机不释放设备等）：先在撤销点里记成当前值再恢复库，库和 config.xml 按实际状态保留，任务消息里列出。
+- **删盘**：不再扫 VM 目录、删“不在配置里”的盘文件（那样会误删放进目录、还没挂上的盘），只删本次移除、且在本 VM 目录 `/datastore/<段>/<vm uuid>/` 下的文件盘。关机时随配置重写删，运行中等热拔确认后删；挂进来的已有磁盘和 ISO 一律不删。
+- **挂已有磁盘**：编辑加盘可选“挂已有磁盘”（`disks.add[].existing_path`）。文件须在数据存储上，格式为 qcow2 或 raw，且没被任何 VM 用着；挂载时不复制。热插失败回滚、以后从 VM 移除时，都不会删除这个文件。
+- **端口组**：新建或修改时，下发到主机失败就撤销——新建的删掉这一行，修改的用 `service/row_undo.rs` 把整行改回，再把旧配置推回已经下发成功的主机，接口报错。hyper-agent `port_group_apply` 子项有错误时改为报失败，LACP 降级算告警，不算失败。分布式交换机只下发到状态为 ok 的成员。
+- **主机加入 / 移出集群**：concilium 调和有任一节点失败，或本机退出失败，就把库里的归属改回去，按旧归属再调和一次，任务失败。主机 agent 不在线时，移出照常进行。调和成功后才触发分布式交换机自动加入。
+- **测试**：xvirt-autotest 新增 stage 64 `edit_rollback.*` 五条失败用例：
+  - 关机加盘失败整体撤销；
+  - 运行中 SATA / 光驱热加被拒绝；
+  - 运行中热插数量超过空闲插槽，被预检拒绝；
+  - 运行中执行到一半失败（已有磁盘被占写锁），已生效的光盘更换与新 SCSI 盘被撤回；
+  - 端口组下发失败恢复。
+
+  另外 `hotplug.disk_sata` 改为断言拒绝；hyper-agent 新增 `tests/test_update_vm_rollback.py`，lictor 新增 `tests/test_live_atomic.py`。
+- **未覆盖**：VM 模板转换（`vm_template.rs`）和分布式交换机绑定集群（`set_cluster`，异步对账加失败重试）仍是先写库。数据存储与标准交换机的建 / 删半途失败（见审计）没有改。
 
 高置信缺陷（已提 Cairn bug，编号对应下面的列表）：
 
