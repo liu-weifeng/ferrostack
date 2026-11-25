@@ -56,6 +56,7 @@ git@kairos.xve-vt.com:local/<repo>.git
 | xvirt | main | `771b4c0` | 11-09 | 集成仓：`CLAUDE.md` 组件表、`xvirtctl`、nginx、monitoring（VictoriaMetrics 栈）、`build-deb-xvirt`（8 个平台 deb + `xvirt-init`）；`README.md`、`PACKAGING.md`、`cicd/` 仍是 RPM/virt-control 旧口径 |
 | ferrovirt | main | `b0189fd` | 11-09 | Rust 控制面：REST/WS、任务、DB owner、center↔节点 ZMQ（5570/5571）、周期状态对账、资源规划与放置、在线迁移与跨存储快照链迁移编排、内存分层快照落库 |
 | xvirt-client | main | `830f6dc` | 11-09 | React/Vite Web 控制台，center/standalone 双角色；主机详情有资源规划页（拓扑、内存、分层水位线、节点健康、自动放置） |
+| xvirt-dcui | main | `a74b576` | 11-26 | Rust (ratatui) ESXi 风格本地终端字符图形控制台（DCUI），纯计算节点与纯管理节点双模式，对接 `ferrovirt` REST API（`git@kairos.xve-vt.com:local/xvirt-dcui.git`） |
 | hyper-agent | main | `e80ec6d` | 11-09 | Python 宿主机 agent：存储/网络/硬件/文件/petrel；资源规划 apply 与放置控制器；memtier 总控与 NVMe 写入预算；VM 类 action 转 lictor 或 concilium |
 | lictor | main | `317ee3d` | 11-09 | Python QMP owner：VM 生命周期、快照（含内存分层快照 keep/merge）、迁移、热插拔、xvirt-tools；systemd scope 与绑核 |
 | concilium | main | `4eeea1e` | 11-09 | C 集群资源管理：gossip :7700、选主、HA、self-fence + STONITH，驱动 `xvirt-vm` RA 到 lictor；迁移 RA 仍是桩 |

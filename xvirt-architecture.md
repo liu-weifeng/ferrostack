@@ -91,6 +91,7 @@ center 纳管主机时连的是主机上的 ferrovirt（5570/5571），所以实
 | 组件 | 技术栈 | 角色 | 主要入口 |
 |---|---|---|---|
 | xvirt-client | React 18 / Vite | Web 控制台，center 多主机管理与 standalone 单机两套界面；主机详情有"资源规划"页 | nginx 静态托管，开发时 :5173 |
+| xvirt-dcui | Rust / ratatui / reqwest | ESXi 风格本地终端字符图形控制台（DCUI），支持纯计算节点与纯管理节点双模式，对接 `ferrovirt` REST API | `/usr/local/bin/xvirt-dcui`，systemd `xvirt-dcui.service` (`/dev/tty1`) |
 | ferrovirt | Rust / axum / sqlx / ZMQ | 管理控制面：REST、WebSocket、任务系统、DB 唯一写入者、资源规划与放置的权威、迁移编排 | :8080；center↔节点 :5570/:5571 |
 | hyper-agent | Python asyncio / pyzmq | 每台宿主机的底层 agent：存储、网络、硬件、文件、petrel、资源规划 apply、放置控制器、memtier 总控 | ROUTER :5556，PUB :5558，file :5557 |
 | lictor | Python asyncio / pyzmq | QEMU/QMP 持有者：VM 生命周期、快照、迁移、热插拔、xvirt-tools；systemd scope 与绑核 | ROUTER :5560，PUB :5561 |
