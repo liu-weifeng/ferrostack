@@ -514,6 +514,8 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 
 ### 10.5 虚拟机特性现状与差距（2026-11-24 按 1.0 已承诺需求审查）
 
+> **2026-11-25 实测回写**：xvirt-autotest 全量 `TRUN-01M88FXH33ADMY226V9ACTRVAW`（双节点集群，154 条：149 通过、0 失败、5 跳过）。下面 21 条缺陷除第 11 条（管理中心前端，无自动化用例，Cairn 仍 open）外均已在 Cairn 标 resolved；各行“已实测”注明对应用例。测试期间的修复提交：ferrovirt `2576833`…`98743f8`（另 `c675c3d` 锁 Cargo.lock）、lictor `d200a79`…`54f0607`、hyper-agent `1a6d51e`…`592c437`、xvirt-tools `7aacb1b`…`0f18962`、xvirt `693da1b`（lictor 依赖 ovmf、hyper-agent 依赖 xorriso）。跳过且与本节相关的：`hotplug.disk_sata`——运行中热加 SATA 盘 QEMU 报 `Bus 'ide.0' does not support hotplugging`（AHCI 不支持热插），后端目前保存配置后让任务失败，应与运行中删 SATA 一样提前拒绝或明确记为下次开机生效；`vm.migrate_owner`（REQ-CLU-030）测试机只有一个可作所属存储的数据存储，未测。
+
 按 1.0 已承诺的 59 条虚拟机需求逐条从前端追到 QEMU 命令行（只读代码，未编译、未实测；审查时各子仓版本 ferrovirt `d00d396`、lictor `afd077a`、hyper-agent `645a383`、xvirt-client `bb9fadd`）。REQ-VM-033 网卡 VLAN 此前已修，未复审。其余 58 条：实现 / 基本实现 10 条，部分 32 条，缺失 16 条。
 
 | 需求 | 状态 | 主要差距 |
@@ -523,7 +525,7 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 003 挂起恢复 | 部分 | 挂起只是 QMP `stop`，无挂起到磁盘；guest 自己 S3 后用 `cont` 能否唤醒待确认 |
 | 004 删除 | 部分 | 删除前不查快照与依赖；管理中心默认 force，运行中 VM 被直接强杀 |
 | 005 状态同步 | 部分 | 关机 / QEMU 退出约 1.5 s 反映；无 pvpanic，崩溃检测不到 |
-| 006 开机自启与顺序 | 已实现未验证（2026-11-24） | VM 设“开机自启 / 启动顺序 / 延迟”（`vm.autostart*`，编辑 VM 的选项页）；agent 上报 `boot_id`，ferrovirt 发现主机 `boot_id` 变化即判定重启过，先对账电源状态再按顺序逐台开机、每台等延迟；首次见到 `boot_id` 只记录不触发；`GET /api/vcenter/host/{host}/autostart` 查本主机顺序。管理中心与计算节点的 ferrovirt 可能各跑一遍（开机幂等） |
+| 006 开机自启与顺序 | 已实测（2026-11-25，autotest `vm_feat.autostart_config_and_order`） | VM 设“开机自启 / 启动顺序 / 延迟”（`vm.autostart*`，编辑 VM 的选项页）；agent 上报 `boot_id`，ferrovirt 发现主机 `boot_id` 变化即判定重启过，先对账电源状态再按顺序逐台开机、每台等延迟；首次见到 `boot_id` 只记录不触发；`GET /api/vcenter/host/{host}/autostart` 查本主机顺序。管理中心与计算节点的 ferrovirt 可能各跑一遍（开机幂等） |
 | 008 重命名与备注 | 部分 | 描述清不空；摘要页“编辑备注”按钮未绑定；管理中心为假任务 |
 | 009 批量操作 | 部分 | 批量重启只对第一台生效；无批量迁移；管理中心不能多选 |
 | 011 vCPU 与拓扑 | 部分 | 拓扑乘积不等时静默压平；编辑后重建丢启动 vCPU（缺陷 6） |
@@ -535,19 +537,19 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 019 大页 | 部分 | 只能在资源规划页设；热加内存不是大页 |
 | 020 添加 / 移除磁盘 | 部分 | 不能挂已有磁盘；移除不清 Petrel 卷和非所属存储上的盘文件 |
 | 021 总线类型 | 部分 | 无 NVMe（静默变 virtio-blk）；Petrel 盘总线固定 vhost-user-blk |
-| 022 置备方式 | 已实现未验证（2026-11-24） | 新增 `vm_disk.provisioning`（thin / lazy / eager），向导与编辑“添加磁盘”下发、克隆沿用；文件盘 `qemu-img create -o preallocation=falloc`（延迟置零）/ `full`（立即置零），fulmar / Petrel 只有厚薄两档（lazy、eager 都按厚，Petrel `--thick`）；已有盘不能改置备方式 |
-| 023 在线扩容 | 已实现未验证（2026-11-24） | 编辑 VM 的磁盘“容量”可调大（只扩不缩）：运行中文件盘经 lictor `disk_resize`（fulmar 先控制 API `file-resize`，再对格式节点 `block_resize`）；关机时 agent 离线扩（`qemu-img resize` / fulmar `file-resize` / `petrel-ublk resize`）；运行中的 Petrel 盘不支持在线扩，需关机；在线扩失败时库里容量回退、任务报失败 |
+| 022 置备方式 | 已实测（2026-11-25，`vm_feat.provisioning_and_resize`） | 新增 `vm_disk.provisioning`（thin / lazy / eager），向导与编辑“添加磁盘”下发、克隆沿用；文件盘 `qemu-img create -o preallocation=falloc`（延迟置零）/ `full`（立即置零），fulmar / Petrel 只有厚薄两档（lazy、eager 都按厚，Petrel `--thick`）；已有盘不能改置备方式 |
+| 023 在线扩容 | 已实测（2026-11-25，`vm_feat.provisioning_and_resize`） | 编辑 VM 的磁盘“容量”可调大（只扩不缩）：运行中文件盘经 lictor `disk_resize`（fulmar 先控制 API `file-resize`，再对格式节点 `block_resize`）；关机时 agent 离线扩（`qemu-img resize` / fulmar `file-resize` / `petrel-ublk resize`）；运行中的 Petrel 盘不支持在线扩，需关机；在线扩失败时库里容量回退、任务报失败 |
 | 024 缓存模式 | 部分 | 已修待验证（缺陷 9） |
-| 025 磁盘 I/O 限速 | 已实现未验证（2026-11-24） | `vm_disk.iotune`（JSON）：读写分开的 IOPS / 带宽基础上限 + 突发上限 + 突发时长；hyper-agent 写进 config.xml `<iotune>`，lictor 开机在 `cont` 前、运行中修改时都经 QMP `block_set_io_throttle` 下发；编辑 VM 磁盘卡片可设。Petrel（vhost-user-blk）盘不支持 |
+| 025 磁盘 I/O 限速 | 已实测（2026-11-25，`vm_feat.disk_iotune_and_nic_bandwidth`；测试中修：iotune 整数写 XML 要转字符串，QEMU 11 virtio-blk 限速须对 `/machine/peripheral/<id>/virtio-backend` 下发） | `vm_disk.iotune`（JSON）：读写分开的 IOPS / 带宽基础上限 + 突发上限 + 突发时长；hyper-agent 写进 config.xml `<iotune>`，lictor 开机在 `cont` 前、运行中修改时都经 QMP `block_set_io_throttle` 下发；编辑 VM 磁盘卡片可设。Petrel（vhost-user-blk）盘不支持 |
 | 026 Discard / TRIM | 部分 | 已修待验证（缺陷 9）；前端无开关；Petrel 待确认 |
 | 030 添加 / 移除网卡 | 实现 | 运行中改端口组 / VLAN / MTU 不热生效 |
 | 031 网卡型号 | 部分 | 向导缺 e1000e；无白名单；非 virtio 设 MTU 起不来 |
 | 032 MAC 地址 | 部分 | 无 MAC 池；已有网卡 MAC 不能改 |
-| 034 网卡限速 | 已实现未验证（2026-11-24） | 每块网卡流入 / 流出的平均、峰值、突发（沿用 `vm_network_interface.bandwidth_*`，KB/s）；lictor 在 tap 上用 tc 下发（流入 htb、流出 ingress police），开机建 tap 后、热添加时、运行中修改时生效；编辑 VM 网卡卡片可设（Mbit/s）。SR-IOV 直通网卡不支持；端口组 shaping 仍只写 OVS external_ids（未生效，另算） |
+| 034 网卡限速 | 已实测（2026-11-25，`vm_feat.disk_iotune_and_nic_bandwidth`） | 每块网卡流入 / 流出的平均、峰值、突发（沿用 `vm_network_interface.bandwidth_*`，KB/s）；lictor 在 tap 上用 tc 下发（流入 htb、流出 ingress police），开机建 tap 后、热添加时、运行中修改时生效；编辑 VM 网卡卡片可设（Mbit/s）。SR-IOV 直通网卡不支持；端口组 shaping 仍只写 OVS external_ids（未生效，另算） |
 | 035 链路断开 / 连接 | 部分 | 运行中、冷启动、热插均已处理（缺陷 14 待验证）；向导“开机时连接”不下发 |
 | 037 光驱与 ISO | 基本实现 | 运行中重新勾选“已连接”不生效；不能热加光驱 |
-| 038 USB 直通 | 已实现未验证（2026-11-24） | `vm_hostdev_usb`：按厂商 / 产品 ID 或按主机总线 + 端口（新列 `source_port`）匹配，QEMU `usb-host`；需 VM 有 USB 控制器；运行中可热插 / 热拔；编辑 VM“其他设备 → USB 设备（直通）”从主机设备列表选 |
-| 039 PCI 直通 | 已实现未验证（2026-11-24） | `vm_hostdev_pci`：开机前 lictor 把设备及同 IOMMU 组端点绑 vfio-pci（主机在用的带 IP 网卡 / 已挂载盘拒绝），QEMU `vfio-pci` 挂独立 root port，可选关 ROM；运行中可热插 / 热拔；不再被任何 VM 配置时还给主机驱动；`GET /api/vcenter/host/{host}/passthrough-devices` 列可直通设备（IOMMU 组、驱动、主机在用、已配置给哪台 VM）。同一设备同时只给一台运行中的 VM；有直通设备不能迁移 / 拍内存快照。未做：HA 切换到别的主机时设备不存在（会开机失败）、GPU 专项（vGPU / 主显卡）、mdev |
+| 038 USB 直通 | 部分实测（2026-11-25，`vm_feat.passthrough_validation_and_blockers` 只测了校验、USB 控制器前置与阻断迁移 / 内存快照，测试机无真实设备直通；测试中修：usb-host 端口与 usb-tablet 撞 port 1，有 USB 直通时 qemu-xhci 开 8 口） | `vm_hostdev_usb`：按厂商 / 产品 ID 或按主机总线 + 端口（新列 `source_port`）匹配，QEMU `usb-host`；需 VM 有 USB 控制器；运行中可热插 / 热拔；编辑 VM“其他设备 → USB 设备（直通）”从主机设备列表选 |
+| 039 PCI 直通 | 部分实测（2026-11-25，同上，`host.passthrough_devices` 设备清单已测；真实 vfio 绑定与热插拔未测；测试中修：lictor shell 未注册 DeviceController，冷启动 cont 改走 MonitorManager 避免 QMP 抢连接） | `vm_hostdev_pci`：开机前 lictor 把设备及同 IOMMU 组端点绑 vfio-pci（主机在用的带 IP 网卡 / 已挂载盘拒绝），QEMU `vfio-pci` 挂独立 root port，可选关 ROM；运行中可热插 / 热拔；不再被任何 VM 配置时还给主机驱动；`GET /api/vcenter/host/{host}/passthrough-devices` 列可直通设备（IOMMU 组、驱动、主机在用、已配置给哪台 VM）。同一设备同时只给一台运行中的 VM；有直通设备不能迁移 / 拍内存快照。未做：HA 切换到别的主机时设备不存在（会开机失败）、GPU 专项（vGPU / 主显卡）、mdev |
 | 041 vTPM 2.0 | 实现 | 状态在主机本地，HA / 冷迁移后丢（待确认是否在验收范围） |
 | 046 BIOS / UEFI | 实现 | — |
 | 047 安全启动 | 实现 | — |
@@ -555,12 +557,12 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 049 机器类型 | 部分 | 只有不带版本号的 `q35`；无 i440fx |
 | 050 Web VNC | 部分 | 无浏览器全屏、不能切 1:1；无鉴权（缺陷 8） |
 | 052 控制台快捷操作 | 部分 | 有 Ctrl+Alt+Del，无粘贴文本 |
-| 054 Guest 信息 | 已实现未验证（2026-11-24） | `/guest/info` 默认读 `vm_guest_state` 缓存（摘要页频繁调不阻塞），运行中且 tools 在线、磁盘用量缓存超 60 s 时后台刷新，`?live=1` 同步实时取；返回 OS（发行版 / 版本 / 内核 / 架构）、主机名、IP 列表、各文件系统用量（新列 `fs_json`）、上次 CPU / 内存；关机后仍可看上次信息。`/guest/metrics`、`GET /guest/network` 实时取。客户机页加“文件系统用量”卡片，摘要页显示主机名 |
+| 054 Guest 信息 | 已实测（2026-11-25，`vm_feat.guest_info_and_tools_iso`、`vm_feat.guest_tools_live_e2e`，仅 Linux 客户机） | `/guest/info` 默认读 `vm_guest_state` 缓存（摘要页频繁调不阻塞），运行中且 tools 在线、磁盘用量缓存超 60 s 时后台刷新，`?live=1` 同步实时取；返回 OS（发行版 / 版本 / 内核 / 架构）、主机名、IP 列表、各文件系统用量（新列 `fs_json`）、上次 CPU / 内存；关机后仍可看上次信息。`/guest/metrics`、`GET /guest/network` 实时取。客户机页加“文件系统用量”卡片，摘要页显示主机名 |
 | 055 优雅关机重启 | 部分 | 详情页“关闭 / 重启客户机”已走 xvirt-tools（关机不可用时退 ACPI）；通用“关机”（stop）仍是 ACPI + 60 s 强杀，未先走 tools |
-| 056 文件系统冻结 | 已实现未验证（2026-11-24） | xvirt-tools `fs.freeze` / `fs.thaw` / `fs.status`（Linux FIFREEZE / FITHAW，逐个可写文件系统、逆挂载顺序冻结，自带超时自动解冻，默认 60 s 最长 600 s）；Windows（VSS）未做 |
-| 059 Tools 安装升级 | 已实现未验证（2026-11-24） | 安装盘：xvirt-tools `make iso` 出卷标 XVIRT-TOOLS 的 ISO（Linux amd64/arm64 + `linux/install.sh` systemd 服务；Windows amd64 + `windows/install.ps1`/`install.cmd`，以 SYSTEM 开机计划任务托管、异常 1 分钟后重启；需 virtio-serial 驱动）；主机 deb `xvirt-guest-tools` 装 `/usr/share/xvirt/guest-tools/{xvirt-tools.iso,VERSION}`（进 xvirt-meta 依赖），工具版本 = BASE_VER+git<xvirt-tools sha>。hyper-agent 上报 `guest_tools_version` → `host.guest_tools_version`；`/guest/info` 返回 `tools_upgrade{host_version,upgrade_available}`（版本不同且主机不旧）；`POST /vm/{vm}/guest/tools?action=mount` 把安装盘放进光驱（关机无光驱自动加 SATA 光驱），`action=upgrade` 挂盘后调客户机新 RPC `tools.upgrade`（脱离自身后台跑安装脚本：Linux systemd-run、Windows WMI Win32_Process.Create）并等新版本重连。摘要页显示“可升级到 x”+“升级 / 挂载安装光盘”。已装的旧版 xvirt-tools 没有 `tools.upgrade`，首次需手动运行光盘安装脚本 |
-| 060 转换为模板 | 已实现未验证（2026-11-24） | 见 docs/vm-template-design.md §10：模板 = VM 加标记，不能开机可编辑 |
-| 061 从模板部署 | 已实现未验证（2026-11-24） | 单台 / 批量部署，快速部署按盘 reflink，xvirt-tools 客户机定制 |
+| 056 文件系统冻结 | 已实测（2026-11-25，`vm_feat.guest_tools_live_e2e` 真实 Linux 客户机 FIFREEZE；Windows 未做） | xvirt-tools `fs.freeze` / `fs.thaw` / `fs.status`（Linux FIFREEZE / FITHAW，逐个可写文件系统、逆挂载顺序冻结，自带超时自动解冻，默认 60 s 最长 600 s）；Windows（VSS）未做 |
+| 059 Tools 安装升级 | 已实测（2026-11-25，`vm_feat.guest_tools_live_e2e` 在线自升级，仅 Linux；测试中修 install.sh 兼容 BusyBox、非 systemd 客户机关机 / 重启回退、machine-id / 主机名回退；Windows 安装包未测） | 安装盘：xvirt-tools `make iso` 出卷标 XVIRT-TOOLS 的 ISO（Linux amd64/arm64 + `linux/install.sh` systemd 服务；Windows amd64 + `windows/install.ps1`/`install.cmd`，以 SYSTEM 开机计划任务托管、异常 1 分钟后重启；需 virtio-serial 驱动）；主机 deb `xvirt-guest-tools` 装 `/usr/share/xvirt/guest-tools/{xvirt-tools.iso,VERSION}`（进 xvirt-meta 依赖），工具版本 = BASE_VER+git<xvirt-tools sha>。hyper-agent 上报 `guest_tools_version` → `host.guest_tools_version`；`/guest/info` 返回 `tools_upgrade{host_version,upgrade_available}`（版本不同且主机不旧）；`POST /vm/{vm}/guest/tools?action=mount` 把安装盘放进光驱（关机无光驱自动加 SATA 光驱），`action=upgrade` 挂盘后调客户机新 RPC `tools.upgrade`（脱离自身后台跑安装脚本：Linux systemd-run、Windows WMI Win32_Process.Create）并等新版本重连。摘要页显示“可升级到 x”+“升级 / 挂载安装光盘”。已装的旧版 xvirt-tools 没有 `tools.upgrade`，首次需手动运行光盘安装脚本 |
+| 060 转换为模板 | 已实测（2026-11-25，`vm_feat.template_convert_and_deploy`） | 见 docs/vm-template-design.md §10：模板 = VM 加标记，不能开机可编辑 |
+| 061 从模板部署 | 已实测（2026-11-25，`vm_feat.template_convert_and_deploy`） | 单台 / 批量部署，快速部署按盘 reflink，xvirt-tools 客户机定制 |
 | 062 完整克隆 | 部分 | 单机界面（列表右键、详情页工具栏）与管理中心都有入口（2026-11-24，待验证）；运行中克隆一致性与 Petrel 盘克隆已修（缺陷 17、3，待验证）；NFS 上的运行中克隆不支持 |
 | 063 链接克隆 | 缺失 | — |
 | 065 Linux 定制 | 部分（2026-11-24） | 部署时经 xvirt-tools `os.customize` 设主机名 / IP / 密码 / SSH 公钥、重新生成 machine-id；cloud-init 通道第二期 |
@@ -568,13 +570,13 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 | 068 恢复快照 | 部分 | 无“恢复后开机”；NVRAM 与 VM 配置不进快照；多盘回滚失败已可撤回（缺陷 21，待验证） |
 | 069 删除快照 | 部分 | 删中间节点须连子树；无“删除全部”；子树删除有缺陷 2 |
 | 070 快照树 | 实现 | 受缺陷 2 影响 |
-| 071 静默快照 | 已实现未验证（2026-11-24） | 运行中不含内存的快照：冻结 → 暂停 → 拍 → 恢复 → 解冻；冻结失败可选降级为崩溃一致（默认）或中止；库里 `quiesced` 按实际结果记录；仅 Linux 客户机 |
+| 071 静默快照 | 已实测（2026-11-25，`vm_feat.guest_info_and_tools_iso`（降级 / 中止）、`vm_feat.guest_tools_live_e2e`（真冻结记 quiesced=1）） | 运行中不含内存的快照：冻结 → 暂停 → 拍 → 恢复 → 解冻；冻结失败可选降级为崩溃一致（默认）或中止；库里 `quiesced` 按实际结果记录；仅 Linux 客户机 |
 | 072 内存分层快照 | 基本实现 | 默认 auto 而非 keep；恢复时不能选 keep / merge |
 | 074 CPU 热添加 | 部分 | 向导勾选不下发；编辑后余量被清（缺陷 6） |
 | 075 内存热添加 | 部分 | 向导勾选不下发；无 virtio-mem |
-| 076 磁盘热插拔 | 部分 | SATA / IDE 不拦（缺陷 4）；热插盘不带 cache / discard |
+| 076 磁盘热插拔 | 部分 | 运行中删 SATA / IDE 已拒绝（缺陷 4，已实测）；运行中热加 SATA 盘 QEMU 不支持（AHCI 无热插），后端未提前拦截，任务失败但配置已保存（2026-11-25 autotest 跳过 `hotplug.disk_sata` 发现）；热插盘不带 cache / discard |
 | 077 网卡热插拔 | 实现 | 热插忽略 link_state |
-| 080 镜像导入 | 已实现未验证（2026-11-24） | 上传：数据存储文件上传接口（原 501）实现，ferrovirt 边收边转到主机 hyper-agent 文件传输通道（5557，一次性令牌 PUT），不经 ZMQ；导入：编辑 VM 加盘选“导入磁盘镜像”，提交前在 VM 所在主机 `image_info` 探测格式（qcow2 / raw / vmdk / vhdx / vhd / vdi）与容量，新盘记 `vm_disk.import_src`，agent `update_vm` 用 `qemu-img convert` 生成（展平 backing，fulmar 上转 raw），完成后清空；导入时 update_vm 超时放宽到 1 小时。Petrel 目标不支持；新建 VM 向导里不能直接导入（建好再加盘） |
+| 080 镜像导入 | 已实测（2026-11-25，`storage.upload_and_browse`、`vm_feat.disk_import`；测试中修：上传流式转发的 Multipart 借用改经有界 mpsc 转 'static 流） | 上传：数据存储文件上传接口（原 501）实现，ferrovirt 边收边转到主机 hyper-agent 文件传输通道（5557，一次性令牌 PUT），不经 ZMQ；导入：编辑 VM 加盘选“导入磁盘镜像”，提交前在 VM 所在主机 `image_info` 探测格式（qcow2 / raw / vmdk / vhdx / vhd / vdi）与容量，新盘记 `vm_disk.import_src`，agent `update_vm` 用 `qemu-img convert` 生成（展平 backing，fulmar 上转 raw），完成后清空；导入时 update_vm 超时放宽到 1 小时。Petrel 目标不支持；新建 VM 向导里不能直接导入（建好再加盘） |
 | 085 Guest OS 清单 | 缺失 | 无清单、无 virtio-win、tools 无安装包 |
 
 高置信缺陷（已提 Cairn bug，编号对应下面的列表）：
