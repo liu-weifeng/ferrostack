@@ -634,16 +634,23 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
     - 其余主机：建成的记关联或成员行，没建成的不记（不再记 failed 成员行交给后台重试）。有失败任务就失败，已建成的保留。
     - 分布式交换机创建时带了集群：有主机没建成，就不写集群绑定，与“绑定集群”任务的规则一致。
     - 删除：卸掉 / 拆掉一台就删这台的关联行。有主机没删掉，就保留数据存储 / 交换机（及端口组）和这些主机的记录，任务失败，重试只处理剩下的。以前 NFS 和分布式交换机不管删没删掉都清库。fulmar 有成员没停掉时，创建主机不停、不擦盘。
-  - **未覆盖**：
-    - 新建 Petrel 池作数据存储时，写库失败池会留下（Petrel 还没有删池命令）。
-    - 主机 IP 缺失的分布式交换机成员会让删除一直失败，需先移除该成员。
+  - **Petrel 新建池**（2026-11-25 已实现未验证）：
+    - Petrel 新增删池：Mon `DeletePool` 变更与 RPC、`petrel-mon delete-pool --name <池> --yes-i-really-mean-it`。只从 cluster map 摘掉池、它的 EC profile 和 pg_temp，不回收 OSD 上的数据；最近有 OSD 上报在服务该池时拒绝（`--force` 例外）。
+    - hyper-agent：
+      - 建 Petrel 数据存储时本次新建的池，后续查池号失败就删掉。以前查不到会静默回退成默认池 1 登记。
+      - 返回 `pool_created` 标记池是否本次新建。
+      - `delete_datastore` 的 `drop_pool` 真正删池，拒删集群默认池，也不带 force。
+    - ferrovirt：写库失败时，只有池是本次新建的才带 `drop_pool` 撤销；用已有池的只撤句柄。
+  - **未覆盖**：主机 IP 缺失的分布式交换机成员会让删除一直失败，需先移除该成员。
 - **测试（数据存储 / 交换机）**：stage 64 新增四条。
   - `edit_rollback.vswitch_bad_uplink`：上行不存在，库里和主机上都没有这台交换机。
   - `edit_rollback.dvs_create_partial`：一台上行不存在，建成的保留为成员，失败主机没有成员行，也没有桥。
   - `edit_rollback.nfs_bad_export`：export 挂不上，库里没有，主机上不留挂载和 fstab 条目。
   - `edit_rollback.dvs_delete_partial`（gated）：一台 agent 离线时删除失败、只剩它的成员行，恢复后删成功。
 
-  hyper-agent 新增 `tests/test_datastore_bridge_rollback.py`。
+  另加 `edit_rollback.petrel_delete_pool`：删池要确认参数，删后池列表里没有；有 OSD 在服务的默认池不带 force 拒删。
+
+  hyper-agent 新增 `tests/test_datastore_bridge_rollback.py`（含 Petrel 池回滚）；petrel monstore 新增 `delete_pool_removes_pool_ec_profile_and_pg_temp` 单测。
 
 高置信缺陷（已提 Cairn bug，编号对应下面的列表）：
 
