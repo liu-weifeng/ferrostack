@@ -641,7 +641,11 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
       - 返回 `pool_created` 标记池是否本次新建。
       - `delete_datastore` 的 `drop_pool` 真正删池，拒删集群默认池，也不带 force。
     - ferrovirt：写库失败时，只有池是本次新建的才带 `drop_pool` 撤销；用已有池的只撤句柄。
-  - **未覆盖**：主机 IP 缺失的分布式交换机成员会让删除一直失败，需先移除该成员。
+  - **下发不到的成员主机**（2026-11-25 已实现未验证）：主机已从管理中心移除、已停用或没有 IP 时，桥等多久都拆不了，不再挡住删除。
+    - 删分布式交换机：跳过这些成员的拆桥，成员行随交换机一起清掉。任务成功，消息里列出这些主机，提示需要时到主机上手动删桥。
+    - 移出成员：这类成员可以单独移出（以前要求主机启用，既移不掉也删不掉交换机），只清成员行和上行，不拆桥；仍要求没有 VM 网卡连着、且不是最后一个成员。
+    - 启用、有 IP 但 agent 离线的成员仍算失败，属于临时状态，可以重试。
+    - 测试：stage 64 `edit_rollback.dvs_unmanaged_member`（gated，停用第二台主机）。
 - **测试（数据存储 / 交换机）**：stage 64 新增四条。
   - `edit_rollback.vswitch_bad_uplink`：上行不存在，库里和主机上都没有这台交换机。
   - `edit_rollback.dvs_create_partial`：一台上行不存在，建成的保留为成员，失败主机没有成员行，也没有桥。
