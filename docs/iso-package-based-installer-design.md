@@ -114,7 +114,7 @@ flowchart LR
   5. 发布后再用只指向本地发布目录的 apt 把各组种子重新解析一遍（自检），通过才切换 `current`。
   不需要不动点迭代。实测（2026-11-26，种子初版）：Ubuntu 包名 1126 个，镜像约 1400 个文件、2.2 GiB；运行时部分单版本约 1.1 GiB，其中 `linux-firmware` 各子包合计约 660 MiB。
 - **代价**：种子里新增一个包时，需要先跑一次 `mirror-sync.sh`（联网）再构建。compose-repo 发现缺包时直接报错并提示"请先同步镜像"，不会悄悄联网。
-- **上游地址可配置**：默认用国内镜像站（如 `mirrors.aliyun.com/ubuntu`）加快同步，仍校验 Ubuntu 官方签名（aptly mirror 校验上游 `Release.gpg`，构建机需导入 Ubuntu archive keyring）。
+- **上游地址可配置**：默认用 Ubuntu 官方中国镜像 `cn.archive.ubuntu.com`（实测最快、稳定；清华源拒绝 aptly 的 User-Agent，阿里云约 1 MiB/s），仍校验 Ubuntu 官方签名（aptly mirror 校验上游 `Release.gpg`，构建机需导入 Ubuntu archive keyring）。
 - **同步时机**：
   - 出现需要处理的 Ubuntu 安全公告时（§7.5）；
   - `xvirt-distro` 种子变更时；
