@@ -676,8 +676,24 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
     - agent 失败或返回的不是列表时不动库，不会误删整张清单。
     - 超出 `type` 枚举的值落 NULL。
   - 本机自注册时顺带扫一次适配器（和存储设备一样），页面开箱有内容。
-  - 同类未实现、本次未改：存储设备详情页的设备操作（`storage-devices/{device}` POST，`HostService::storageDeviceAction`）、`network-scan`、内部端口改 IP。
+  - 同类未实现、本次未改：`network-scan`、内部端口改 IP。（存储设备详情页的设备操作已在下一条补上。）
   - 测试：ferrovirt `host_sync::adapter_type_tests`；stage 31 `host.standalone_adapter_rescan`（同步数大于 0 且等于列表数；主机上每个 PCI 存储控制器都在列表里；重复扫描数量不变；对占位行扫描必须返回 4xx）。
+- **存储设备详情页设备操作未实现**（2026-11-26 已修未验证，REQ-STO-021）：详情页"清除分区表""重新扫描"返回 501 `HostService::storageDeviceAction not yet ported`。agent 早有 `wipe_partition_table` / `rescan_disk`，但清除只拒绝系统盘和挂载分区，`force` 还能跳过挂载检查。Petrel OSD、fulmar 用的裸盘，LVM / RAID 成员，swap，直通给 VM 的盘，都不在挂载表里，会被清掉。
+  - ferrovirt：`POST storage-devices/{device}?action=wipe|rescan` 同步执行，`device` 认 disk.id / name / path。
+    - 清除前先查库：盘或分区还关联未删除的数据存储（分区 / ZFS 池），或被 VM 当块设备（`vm_disk.block_dev`）直通，返回 409。
+    - agent 成功后才重扫本机存储设备清单，agent 失败不动库。清单重扫失败不影响操作结果，返回 `inventory_refreshed=false`。
+    - 不支持的操作返回 400。
+  - hyper-agent：新增 `disk_admin.in_use_reasons`，检查整盘及其分区，命中任意一项都拒绝清除，并一次列出所有原因：
+    - 系统盘、已挂载；
+    - holders（LVM / RAID / 多路径 / 加密）、swap；
+    - Petrel `cluster.json` 的元数据盘或数据盘、fulmar `/etc/fulmar/*.conf` 的 DEVICE；
+    - ZFS 池成员、被进程打开（扫 `/proc/*/fd`，覆盖运行中的 Petrel OSD、fulmar、QEMU 直通）。
+    - `force` 不再绕过任何检查，只为接口兼容接受；ferrovirt 也不转发它。
+  - xvirt-client：清除对话框去掉"强制"勾选，改为说明哪些盘会被拒绝；同步结果显示"已完成"，清单刷新失败时提示去列表重新扫描。
+  - 测试：
+    - hyper-agent `tests/test_disk_admin_wipe_guard.py`：空闲盘可清；挂载、系统盘、分区 holder、swap、进程打开、fulmar、Petrel、ZFS 各自拒绝，且带 force 也拒绝；前缀相同的别的设备不误判；多个原因一起报。
+    - ferrovirt `storage_net::disk_action_tests`。
+    - stage 31 `host.disk_action_guard`：用 scsi_debug 造 64 MB 内存盘，不碰真实磁盘。覆盖不支持的操作 400、系统盘带 force 也拒绝、单盘重新扫描、挂载拒绝且分区还在、进程打开拒绝、空闲时清除成功且库里分区刷新掉。
 
 高置信缺陷（已提 Cairn bug，编号对应下面的列表）：
 
