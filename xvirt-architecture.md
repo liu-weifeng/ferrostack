@@ -657,6 +657,12 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 
   hyper-agent 新增 `tests/test_datastore_bridge_rollback.py`（含 Petrel 池回滚）；petrel monstore 新增 `delete_pool_removes_pool_ec_profile_and_pg_temp` 单测。
 
+- **单机存储设备扫描选错主机**（2026-11-26 已修未验证，REQ-STO-021，10.8.1.199 上发现）：单机控制台"存储设备"页扫描一直返回 400 `host not found or not enabled`，列表为空。
+  - 原因：库里除了 agent 自注册的真实主机，还有管理节点启动时建的身份占位行 `__self__`（enabled=0、status=self，id 更小）。主机列表接口一并返回它，存储设备页取列表第一项当本机，取到了占位行。
+  - ferrovirt：`GET /api/vcenter/host` 不再返回 `__self__`，按 id 排序。占位行本身保留，管理节点身份签发仍用它。
+  - xvirt-client：新增 `api/hostPick.js`。单机下自选本机的六个页面（存储适配器、存储设备、设备详情、物理网卡、内部端口、TCP/IP）改用 `pickLocalHost()`：去掉占位行，优先已连接的主机。新建 VM、从模板部署的主机下拉用 `realHosts()` 过滤。前端也做过滤，是为了兼容旧后端。
+  - 测试：xvirt-client `npm test`（`hostPick.test.mjs`，含"占位行排第一""只有占位行"等情况）；stage 31 `host.list_excludes_self`，以及 `host.standalone_storage_rescan`（节点单机 API 选本机扫描成功、有盘；直接对占位行扫描必须返回 4xx）。
+
 高置信缺陷（已提 Cairn bug，编号对应下面的列表）：
 
 1. 快照模式 `V2_PER_DISK` / `V2_FULMAR_REFLINK` 不在建表枚举里（`vm_snapshot.snapshot_mode`、`vm_snapshot_disk.storage_backend`、`vm_config.snapshot_mode`），带 Petrel / fulmar / 混合存储的 VM 快照写库失败；建 fulmar 上的 VM 写 `vm_config.snapshot_mode` 同样失败。同类问题：`datastore.type` 枚举没有 `fulmar`，fulmar 数据存储建不进库。（2026-11-24 已修：ferrovirt `service/schema_fix.rs` 启动时把四列放开为 VARCHAR 并修复被截成空串的旧值，打包建表脚本同步改为 varchar；未验证）
