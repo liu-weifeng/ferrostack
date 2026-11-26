@@ -666,6 +666,9 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
   - hyper-agent `scan_storage_devices`：容量为 0 的块设备不列出（空卡槽、没放盘的光驱 / 读卡器、未连接的 nbd）。插入介质后再扫描即出现。容量读不到的仍然列出。
   - 已登记的空设备在下次扫描时由 ferrovirt 软删除（原有的"本次没扫到就软删"逻辑），不用改库。
   - 测试：hyper-agent `tests/test_storage_device_scanner_empty.py`（假 sysfs：0 字节跳过、真盘保留、读不到容量仍列出、全是空设备时返回空列表）；stage 31 `host.standalone_storage_rescan` 加断言：列表里没有 0 字节设备，且主机 `/sys/block` 里 size 为 0 的设备都不在列表中。
+- **存储设备扫描列出 nbd / ublk 设备**（2026-11-26 已修未验证，REQ-STO-021）：扫描器排除的虚拟设备前缀里没有 `nbd`、`ublkb`。Petrel 给 VM 挂的 ublk 卷、qemu-nbd 或 Aegis NBD 导出挂上来的设备有真实容量，会被当成物理盘列出。在上面建存储或做裸盘会毁掉 VM 数据。
+  - hyper-agent：排除前缀加上 `nbd`、`ublkb`，与告警模块 `alert_monitor._VIRT_DEV_RE` 一致。已登记的由 ferrovirt 下次扫描软删除。
+  - 测试：同一单测文件新增"有容量的 nbd / ublk 不列出""名字相近的真盘不误伤"；stage 31 `host.standalone_storage_rescan` 加断言：列表里没有 nbd / ublkb 开头的设备。
 
 高置信缺陷（已提 Cairn bug，编号对应下面的列表）：
 
