@@ -104,13 +104,15 @@ flowchart LR
 - **按种子过滤**：过滤条件 = `xvirt-distro` 中**所有种子的并集**：
   - 运行时：`base` + `platform` + `installer-env`（决定 ISO 内容）；
   - 构建期：`build-deps`（CI 编译各组件所需的构建依赖，只进镜像，不进 ISO）。
-  - **不跟随 Recommends / Suggests**；`a | b` 形式的可选依赖只跟随首选项（aptly 默认行为），与目标系统的安装策略一致（§7.6）。
-- **按 pocket 分别过滤的问题与处理**：aptly 的 `-filter-with-deps` 只在**当前 mirror 内**解析依赖，`-updates` / `-security` 中的包往往依赖 release pocket 里的包，单独过滤会漏。因此由 `xvirt-distro/mirror/mirror-sync.sh` 做**不动点迭代**：
-  1. release pocket：`-filter=<种子并集> -filter-with-deps`；
-  2. 把第 1 步得到的完整包名列表作为 `-updates` / `-security` 的过滤条件（按包名，不再展开依赖）；
-  3. 三个 pocket 合并成临时快照，用 `aptly snapshot filter -with-deps` 重新计算闭包；
-  4. 若闭包中出现镜像里没有的包（更新引入了新依赖），把它们加入过滤列表，回到第 1 步，直到没有新增；
-  5. 打带日期的快照（如 `ubuntu-20261125`）。
+  - **不跟随 Recommends / Suggests**；`a | b` 形式的可选依赖由 apt 按首选项解析，与目标系统的安装策略一致（§7.6）。
+  - `Priority: required` 自动加入；xvirt 包（`xvirt-meta` 等）的 Ubuntu 依赖通过临时加入 xvirt 自有源解析，xvirt 包本身不进 Ubuntu 镜像。
+- **闭包用 apt 解析，不用 aptly 的 `-filter-with-deps`**（已实现，`xvirt-distro/mirror/mirror-sync.sh` + `resolve.py`）：aptly 的 `-filter-with-deps` 只在**当前 mirror 内**解析依赖，`-updates` / `-security` 中的包往往依赖 release pocket 里的包，单独过滤会漏。因此：
+  1. 在临时 apt 根目录中读取上游三个 pocket 的索引（校验 Ubuntu 签名），对每组种子 `apt-get -s install --no-install-recommends`，apt 把三个 pocket 当整体解析，结果就是目标系统真正会装的包；
+  2. 黑名单检查（命中即失败并打印依赖来源）；
+  3. 三个 aptly mirror 的 filter 都设为闭包中的**精确包名列表**（不再展开依赖），`mirror update` 只下载这些包；
+  4. 各 pocket 打快照，`snapshot merge -latest` 合成带日期的快照（如 `ubuntu-20261126`）；
+  5. 发布后再用只指向本地发布目录的 apt 把各组种子重新解析一遍（自检），通过才切换 `current`。
+  不需要不动点迭代。实测（2026-11-26，种子初版）：Ubuntu 包名 1126 个，镜像约 1400 个文件、2.2 GiB；运行时部分单版本约 1.1 GiB，其中 `linux-firmware` 各子包合计约 660 MiB。
 - **代价**：种子里新增一个包时，需要先跑一次 `mirror-sync.sh`（联网）再构建。compose-repo 发现缺包时直接报错并提示"请先同步镜像"，不会悄悄联网。
 - **上游地址可配置**：默认用国内镜像站（如 `mirrors.aliyun.com/ubuntu`）加快同步，仍校验 Ubuntu 官方签名（aptly mirror 校验上游 `Release.gpg`，构建机需导入 Ubuntu archive keyring）。
 - **同步时机**：
