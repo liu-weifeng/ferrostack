@@ -662,6 +662,10 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
   - ferrovirt：`GET /api/vcenter/host` 不再返回 `__self__`，按 id 排序。占位行本身保留，管理节点身份签发仍用它。
   - xvirt-client：新增 `api/hostPick.js`。单机下自选本机的六个页面（存储适配器、存储设备、设备详情、物理网卡、内部端口、TCP/IP）改用 `pickLocalHost()`：去掉占位行，优先已连接的主机。新建 VM、从模板部署的主机下拉用 `realHosts()` 过滤。前端也做过滤，是为了兼容旧后端。
   - 测试：xvirt-client `npm test`（`hostPick.test.mjs`，含"占位行排第一""只有占位行"等情况）；stage 31 `host.list_excludes_self`，以及 `host.standalone_storage_rescan`（节点单机 API 选本机扫描成功、有盘；直接对占位行扫描必须返回 4xx）。
+- **存储设备扫描出现 0 字节空设备**（2026-11-26 已修未验证，REQ-STO-021）：10.8.1.199 上读卡器的 8 个空卡槽（sde–sdl）被列进存储设备，没有容量，选了也建不了存储。
+  - hyper-agent `scan_storage_devices`：容量为 0 的块设备不列出（空卡槽、没放盘的光驱 / 读卡器、未连接的 nbd）。插入介质后再扫描即出现。容量读不到的仍然列出。
+  - 已登记的空设备在下次扫描时由 ferrovirt 软删除（原有的"本次没扫到就软删"逻辑），不用改库。
+  - 测试：hyper-agent `tests/test_storage_device_scanner_empty.py`（假 sysfs：0 字节跳过、真盘保留、读不到容量仍列出、全是空设备时返回空列表）；stage 31 `host.standalone_storage_rescan` 加断言：列表里没有 0 字节设备，且主机 `/sys/block` 里 size 为 0 的设备都不在列表中。
 
 高置信缺陷（已提 Cairn bug，编号对应下面的列表）：
 
