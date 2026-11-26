@@ -669,6 +669,15 @@ ferrovirt `vm_migrate.rs` 编排：`migrate_export`（源）→ `migrate_incomin
 - **存储设备扫描列出 nbd / ublk 设备**（2026-11-26 已修未验证，REQ-STO-021）：扫描器排除的虚拟设备前缀里没有 `nbd`、`ublkb`。Petrel 给 VM 挂的 ublk 卷、qemu-nbd 或 Aegis NBD 导出挂上来的设备有真实容量，会被当成物理盘列出。在上面建存储或做裸盘会毁掉 VM 数据。
   - hyper-agent：排除前缀加上 `nbd`、`ublkb`，与告警模块 `alert_monitor._VIRT_DEV_RE` 一致。已登记的由 ferrovirt 下次扫描软删除。
   - 测试：同一单测文件新增"有容量的 nbd / ublk 不列出""名字相近的真盘不误伤"；stage 31 `host.standalone_storage_rescan` 加断言：列表里没有 nbd / ublkb 开头的设备。
+- **存储适配器重新扫描未实现**（2026-11-26 已修未验证，REQ-STO-021 AC-1，10.8.1.199 上发现）：单机"存储适配器"页点重新扫描返回 501 `HostService::scanStorageAdapters not yet ported`，清单一直为空。agent 早有 `scan_storage_adapters`，只是 ferrovirt 端点还是占位。
+  - ferrovirt：`POST /api/vcenter/host/{host}/storage-adapters?action=rescan` 经 agent `scan_storage_adapters` 扫描，用 `host_sync::apply_adapters_only` 同步进 `storage_adapter`，同步返回 `{host, adapters_synced}`。
+    - 识别键 (host_id, name)，和纳管同步一致。本次没扫到的软删，再出现时恢复。
+    - 整批在一个事务里，任何一条写失败就整体回滚、返回错误。
+    - agent 失败或返回的不是列表时不动库，不会误删整张清单。
+    - 超出 `type` 枚举的值落 NULL。
+  - 本机自注册时顺带扫一次适配器（和存储设备一样），页面开箱有内容。
+  - 同类未实现、本次未改：存储设备详情页的设备操作（`storage-devices/{device}` POST，`HostService::storageDeviceAction`）、`network-scan`、内部端口改 IP。
+  - 测试：ferrovirt `host_sync::adapter_type_tests`；stage 31 `host.standalone_adapter_rescan`（同步数大于 0 且等于列表数；主机上每个 PCI 存储控制器都在列表里；重复扫描数量不变；对占位行扫描必须返回 4xx）。
 
 高置信缺陷（已提 Cairn bug，编号对应下面的列表）：
 
